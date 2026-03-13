@@ -13,22 +13,29 @@
       in
       {
         devShells = {
-          default = pkgs.mkShell {
-            buildInputs = [
-              pkgs.zig
-              pkgs.zls
-              pkgs.lldb
-              pkgs.llvmPackages.lldbPlugins.llef
-              pkgs.limine-full
-              pkgs.just
-              pkgs.libisoburn
-              pkgs.qemu
-            ];
 
-            shellHook = ''
-              export LIMINE_SHARE="${pkgs.limine-full}/share/limine"
-            '';
-          };
+          default =
+          let
+            limine = pkgs.limine-full;
+          in
+            pkgs.mkShell {
+              buildInputs = [
+                # language tools
+                pkgs.zig
+                pkgs.zls
+                pkgs.lldb
+                pkgs.llvmPackages.lldbPlugins.llef
+
+                # development tools
+                limine
+                pkgs.libisoburn # for xorriso
+                pkgs.qemu
+              ];
+
+              shellHook = ''
+                export LIMINE_SHARE_PATH="${limine}/share/limine"
+              '';
+            };
         };
       }
     );
