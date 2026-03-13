@@ -31,7 +31,6 @@ export fn _start() noreturn {
     setupSerial();
 
     sendString("Hello world!");
-
     hcf();
 }
 
