@@ -28,6 +28,14 @@ inline fn inb(port: u16) u8 {
 const COM1 = 0x3F8;
 
 export fn _start() noreturn {
+    setupSerial();
+
+    sendString("Hello world!");
+
+    hcf();
+}
+
+fn setupSerial() void {
     outb(COM1 + 1, 0x00);    // disable interrupts
     outb(COM1 + 3, 0x80);    // enable DLAB
     outb(COM1 + 0, 0x01);    // divisor low  (115200)
@@ -35,12 +43,10 @@ export fn _start() noreturn {
     outb(COM1 + 3, 0x03);    // 8 bits, no parity, one stop
     outb(COM1 + 2, 0xC7);    // enable FIFO
     outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR
-
-    sendString("Hello world!");
-    hcf();
 }
 
 inline fn sendChar(c: u8) void {
+    while ((inb(COM1 + 5) & 0x20) == 0) {}
     outb(COM1, c);
 }
 
