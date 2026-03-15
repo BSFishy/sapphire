@@ -85,14 +85,14 @@ fn setupMemory() !void {
     const hhdm_response = hhdm.response orelse return error.errors;
     try writer.print("offset: 0x{x}\n", .{hhdm_response.offset});
 
-    const frames = try memory.createFrameList(entries, hhdm_response.offset);
-    for (0..15) |i| {
-        const page = frames[i];
-        try writer.print(" page {*} -> {}\n", .{@as(*void, @ptrFromInt(page.address)), page.flags});
-    }
+    var frame_allocator = try memory.newFrameAllocator(entries, hhdm_response.offset);
 
-    try writer.print("frame list size: {Bi}\n", .{frames.len * @sizeOf(Frame)});
-    try writer.print("total usable space: {Bi}\n", .{frames.len * 4096});
+    const frame = frame_allocator.allocFrame() orelse return error.errors;
+    try writer.print("allocated frame: {}\n", .{frame});
+    frame_allocator.free(frame);
+
+    const frame2 = frame_allocator.allocFrame() orelse return error.errors;
+    try writer.print("allocated frame: {}\n", .{frame2});
 }
 
 fn main() !void {

@@ -56,12 +56,13 @@ fn targetQueryForArch(arch: Arch) std.Target.Query {
 
 pub fn build(b: *std.Build) void {
     const arch = b.option(Arch, "arch", "Architecture to build the kernel for") orelse .x86_64;
+    const ranks = b.option(usize, "ranks", "Number of ranks in the frame allocator") orelse 10;
 
     const query = targetQueryForArch(arch);
     const target = b.resolveTargetQuery(query);
     const optimize = b.standardOptimizeOption(.{});
 
-    const kernel_path = kernelModule(b, .{ .target = target, .optimize = optimize, .arch = arch });
+    const kernel_path = kernelModule(b, .{ .target = target, .optimize = optimize, .arch = arch, .ranks = ranks });
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
     qemu(b, .{ .arch = arch, .iso_path = iso_path });
 }
@@ -70,12 +71,17 @@ fn kernelModule(b: *std.Build, opts: struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     arch: Arch,
+    ranks: usize,
 }) std.Build.LazyPath {
     const sapphire_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
+
+    const options = b.addOptions();
+    options.addOption(usize, "ranks", opts.ranks);
+    sapphire_module.addOptions("options", options);
 
     switch (opts.arch) {
         .x86_64 => {

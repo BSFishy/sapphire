@@ -52,13 +52,11 @@ pub const MemoryMapFeature = extern struct {
             },
 
             pub inline fn start(self: *const Entry, frame_size: u64) u64 {
-                const frame_mask = frame_size - 1;
-                return (self.base + frame_mask) & ~frame_mask;
+                return std.mem.alignForward(u64, self.base, frame_size);
             }
 
             pub inline fn end(self: *const Entry, frame_size: u64) u64 {
-                const frame_mask = frame_size - 1;
-                return (self.base + self.length) & ~frame_mask;
+                return std.mem.alignBackward(u64, self.base + self.length, frame_size);
             }
 
             pub inline fn len(self: *const Entry) u64 {
