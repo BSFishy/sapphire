@@ -33,3 +33,48 @@ pub const BaseRevision = extern struct {
         return self.revision == 0;
     }
 };
+
+pub const MemoryMapFeature = extern struct {
+    pub const Response = extern struct {
+        pub const Entry = extern struct {
+            base: u64,
+            length: u64,
+            type: enum(u64) {
+                usable                = 0,
+                reserved              = 1,
+                acpiReclaimable       = 2,
+                acpiNvs               = 3,
+                badMemory             = 4,
+                bootloaderReclaimable = 5,
+                executableAndModules  = 6,
+                framebuffer           = 7,
+                reservedMapping       = 8,
+            },
+
+            pub inline fn start(self: *const Entry, frame_size: u64) u64 {
+                const frame_mask = frame_size - 1;
+                return (self.base + frame_mask) & ~frame_mask;
+            }
+
+            pub inline fn end(self: *const Entry, frame_size: u64) u64 {
+                const frame_mask = frame_size - 1;
+                return (self.base + self.length) & ~frame_mask;
+            }
+
+            pub inline fn len(self: *const Entry) u64 {
+                // NOTE: assumes 4KiB frames
+                const frame_start = self.start(4096);
+                const frame_end = self.end(4096);
+                return frame_end - frame_start;
+            }
+        };
+
+        revision: u64,
+        entry_count: u64,
+        entries: [*]*Entry,
+    };
+
+    id: [4]u64 = .{ 0xc7b1dd30df4c8b88, 0x0a82e883a194f07b, 0x67cf3d9d378a806f, 0xe304acdfc50c3c62 },
+    revision: u64,
+    response: ?*Response = null,
+};
