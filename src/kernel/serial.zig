@@ -51,7 +51,7 @@ pub fn setupSerial() void {
     outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR
 }
 
-inline fn sendChar(c: u8) void {
+pub inline fn sendChar(c: u8) void {
     while ((inb(COM1 + 5) & 0x20) == 0) {}
     outb(COM1, c);
 }
