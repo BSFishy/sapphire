@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const debug_info = @import("debug_info");
 const serial = @import("serial.zig");
 const limine = @import("limine.zig");
 const memory = @import("memory.zig");
@@ -36,12 +37,31 @@ fn hcf() noreturn {
     }
 }
 
+fn findSymbol(address: u64) debug_info.Symbol {
+    for (debug_info.symbols) |symbol| {
+        if (symbol.start <= address and address <= symbol.end) {
+            return symbol;
+        }
+    }
+
+    return .{
+        .start = 0,
+        .end = 0,
+        .name = "???",
+        .file_name = "???",
+    };
+}
+
 pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ra: ?usize) noreturn {
-    _ = ra;
     _ = error_return_trace;
-    serial.sendString("!KERNEL PANIC!\n");
-    serial.sendString(msg);
-    serial.sendChar('\n');
+    serial.log("!KERNEL PANIC!\n", .{});
+    serial.log("{s}\n", .{msg});
+
+    var it = std.debug.StackIterator.init(ra, null);
+    while (it.next()) |return_address| {
+        const symbol = findSymbol(return_address);
+        serial.log("{s}: 0x{x} in {s}\n", .{symbol.file_name, return_address, symbol.name});
+    }
 
     hcf();
 }
@@ -85,14 +105,14 @@ fn setupMemory() !void {
     const hhdm_response = hhdm.response orelse return error.errors;
     try writer.print("offset: 0x{x}\n", .{hhdm_response.offset});
 
-    var frame_allocator = try memory.newFrameAllocator(entries, hhdm_response.offset);
+    const frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
+    for (frame_allocator.frames[0..15]) |frame| {
+        try writer.print(" frame: {*} - {any}\n", .{@as(*void, @ptrFromInt(frame.address)), frame.free});
+    }
 
-    const frame = frame_allocator.allocFrame() orelse return error.errors;
-    try writer.print("allocated frame: {}\n", .{frame});
-    frame_allocator.free(frame);
-
-    const frame2 = frame_allocator.allocFrame() orelse return error.errors;
-    try writer.print("allocated frame: {}\n", .{frame2});
+    for (frame_allocator.free_list, 0..) |free_frame, i| {
+        try writer.print(" free frame at rank {}: {any}\n", .{i, free_frame});
+    }
 }
 
 fn main() !void {

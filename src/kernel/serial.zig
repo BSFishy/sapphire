@@ -2,6 +2,12 @@ const std = @import("std");
 
 const COM1 = 0x3F8;
 
+pub var WRITER = writer(&.{});
+
+pub fn log(comptime fmt: []const u8, args: anytype) void {
+    WRITER.print(fmt, args) catch unreachable;
+}
+
 pub fn writer(buffer: []u8) std.Io.Writer {
     return .{
         .buffer = buffer,

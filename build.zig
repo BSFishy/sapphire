@@ -77,6 +77,16 @@ fn kernelModule(b: *std.Build, opts: struct {
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
+        .imports = &.{
+            .{
+                .name = "debug_info",
+                .module = b.createModule(.{
+                    .root_source_file = b.path("tools/dwarf-extract/default.zig"),
+                    .target = opts.target,
+                    .optimize = opts.optimize,
+                })
+            },
+        },
     });
 
     const options = b.addOptions();
@@ -91,8 +101,8 @@ fn kernelModule(b: *std.Build, opts: struct {
         else => {},
     }
 
-    const sapphire = b.addExecutable(.{
-        .name = "sapphire",
+    const sapphire_stage1 = b.addExecutable(.{
+        .name = "sapphire-stage1",
         .root_module = sapphire_module,
 
         // seems there is a bug somewhere in the self-hosted zig compiler. using
@@ -100,7 +110,58 @@ fn kernelModule(b: *std.Build, opts: struct {
         .use_llvm = true,
     });
 
+    sapphire_stage1.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
+
+    const dwarf_extract_tool = b.addExecutable(.{
+        .name = "dwarf-extract",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dwarf-extract/main.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+
+    const dwarf_extract = b.addRunArtifact(dwarf_extract_tool);
+    dwarf_extract.addFileArg(sapphire_stage1.getEmittedBin());
+    const dwarf_data = dwarf_extract.addOutputFileArg("dwarf_info.zig");
+
+    const dwarf_step = b.step("dwarf", "Extract kernel DWARF data");
+    dwarf_step.dependOn(&dwarf_extract.step);
+
+    const sapphire_with_dwarf_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/main.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .imports = &.{
+            .{
+                .name = "debug_info",
+                .module = b.createModule(.{
+                    .root_source_file = dwarf_data,
+                    .target = opts.target,
+                    .optimize = opts.optimize,
+                })
+            },
+        },
+    });
+    sapphire_with_dwarf_module.addOptions("options", options);
+    switch (opts.arch) {
+        .x86_64 => {
+            sapphire_with_dwarf_module.red_zone = false;
+            sapphire_with_dwarf_module.code_model = .kernel;
+        },
+        else => {},
+    }
+
+    const sapphire = b.addExecutable(.{
+        .name = "sapphire",
+        .root_module = sapphire_with_dwarf_module,
+
+        // seems there is a bug somewhere in the self-hosted zig compiler. using
+        // llvm for now until we can get a build working with the zig compiler.
+        .use_llvm = true,
+    });
     sapphire.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
+    sapphire.step.dependOn(&dwarf_extract.step);
     b.installArtifact(sapphire);
 
     return sapphire.getEmittedBin();
@@ -201,7 +262,6 @@ fn qemu(b: *std.Build, opts: struct {
         .riscv64,
         .loongarch64 => "virt",
     };
-
 
     const cpu = if (opts.arch.toStd() == builtin.cpu.arch)
             "max"

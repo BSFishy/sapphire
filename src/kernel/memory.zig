@@ -15,10 +15,31 @@ const Flag = enum(usize) {
     }
 };
 
-pub const Frame = struct {
-    const Flags = std.StaticBitSet(Flag.max.value());
+pub fn regionContainsRegion(address: usize, end_address: usize, start: usize, end: usize) bool {
+    if (end < address) {
+        return false;
+    }
 
-    order: usize,
+    if (start > end_address) {
+        return false;
+    }
+
+    return true;
+}
+
+pub const Frame = struct {
+    // TODO: rethink about flags. i feel like there is certainly a better
+    // interface to interact with these like this.
+    const Flags = std.StaticBitSet(Flag.max.value());
+    const Free = struct {
+        order: usize,
+        next_free: ?usize,
+        previous_free: ?usize,
+    };
+
+    free: ?Free,
+
+    region: usize,
     flags: Flags,
     address: usize,
 
@@ -33,26 +54,22 @@ pub const Frame = struct {
 
     pub fn containsRegion(self: *const Frame, start: usize, end: usize) bool {
         const address = self.address;
-        if (address < start) {
+        // NOTE: assumes 4KiB frames
+        const end_address = address + 0x1000;
+
+        if (end < address) {
             return false;
         }
 
-        if (address > end) {
+        if (start > end_address) {
             return false;
         }
 
         return true;
     }
 
-    pub fn reserved(address: usize) Frame {
-        var flags: Flags = .initEmpty();
-        flags.set(Flag.reserved.value());
-
-        return .{
-            .order = 0,
-            .flags = flags,
-            .address = address
-        };
+    pub fn reserved(self: *Frame) void {
+        self.flags.set(Flag.reserved.value());
     }
 
     pub fn allocate(self: *Frame) void {
@@ -67,103 +84,6 @@ pub const Frame = struct {
         self.flags.isSet(Flag.allocated.value());
     }
 };
-
-pub fn newFrameAllocator(entries: []const *PhysicalMemoryManager.Entry, offset: u64) !FrameAllocator {
-    const pmm: PhysicalMemoryManager = .{
-        .entries = entries,
-        .offset = offset,
-    };
-
-    const frame_count = pmm.count_usable_frames();
-    const frame_list_size = frame_count * @sizeOf(Frame);
-
-    const region = pmm.find_region_for_size(frame_list_size) orelse
-        return error.couldNotFindFrame;
-
-    var frames: [*]Frame = @ptrFromInt(region.base + offset);
-    const frames_start_address = @intFromPtr(frames);
-    const frames_end_address = frames_start_address + frame_list_size;
-
-    var capacities: [ranks]usize = undefined;
-    for (0..ranks) |i| {
-        capacities[i] = 0;
-    }
-
-    var frame_idx: usize = 0;
-    for (pmm.entries) |entry| {
-        if (entry.type != .usable) continue;
-
-        // NOTE: assuming 4KiB frames
-        const entry_frame_count = entry.len() / 4096;
-        const entry_start = entry.start(4096);
-
-        var entry_frame_counter = entry_frame_count;
-        while (entry_frame_counter > 0) {
-            const order = std.math.log2(entry_frame_counter);
-            const order_size = std.math.pow(u64, 2, order);
-
-            capacities[order] += 1;
-            entry_frame_counter -= order_size;
-        }
-
-        for (0..entry_frame_count) |idx| {
-            var flags: Frame.Flags = .initEmpty();
-            const address = entry_start + idx * 4096;
-
-            if (address >= frames_start_address and address <= frames_end_address) {
-                flags.set(Flag.reserved.value());
-            }
-
-            frames[frame_idx] = .{
-                .order = 0,
-                .flags = flags,
-                .address = address,
-            };
-
-            frame_idx += 1;
-        }
-    }
-
-    inline for (1..ranks) |i| {
-        const order = ranks - i;
-        capacities[order-1] += capacities[order] * 2;
-    }
-
-    var size: usize = 0;
-    inline for (capacities) |cap| {
-        size += cap * @sizeOf(usize);
-    }
-
-    const free_region = pmm.find_region_for_size(size) orelse return error.insufficientMemory;
-    var free_lists: [ranks][*]usize = undefined;
-    var region_offset: usize = 0;
-    inline for (0..ranks, capacities) |order, cap| {
-        free_lists[order] = @ptrFromInt(free_region.base + region_offset + offset);
-        region_offset += cap * @sizeOf(usize);
-    }
-
-    var lengths: [ranks]usize = undefined;
-    inline for (0..ranks) |i| {
-        lengths[i] = 0;
-    }
-
-    var frame_allocator: FrameAllocator = .{
-        .frames = frames[0..frame_count],
-        .free_lists = free_lists,
-        .lengths = lengths,
-    };
-
-    for (frames, 0..frame_count) |*te, i| {
-        if (te.containsRegion(free_region.base, free_region.base + size)) {
-            te.flags.set(Flag.reserved.value());
-            continue;
-        }
-
-        frame_allocator.insert(0, i);
-    }
-
-    return frame_allocator;
-}
 
 const PhysicalMemoryManager = struct {
     const Entry = limine.MemoryMapFeature.Response.Entry;
@@ -183,7 +103,7 @@ const PhysicalMemoryManager = struct {
         return count;
     }
 
-    fn find_region_for_size(self: *const PhysicalMemoryManager, size: usize) ?*limine.MemoryMapFeature.Response.Entry {
+    fn find_region_for_size(self: *const PhysicalMemoryManager, size: usize) ?limine.MemoryMapFeature.Response.Entry {
         // NOTE: this function currently just finds the first memory map entry
         // that is usable and can fit the data. I'm not sure if there is a
         // better way to find a region, but this should be fine I think.
@@ -191,113 +111,119 @@ const PhysicalMemoryManager = struct {
             if (entry.type != .usable) continue;
             if (entry.length < size) continue;
 
-            entry.type = .reserved;
-            return entry;
+            const address = entry.base;
+            const length = entry.length;
+
+            entry.base = address + size;
+            entry.length = length - size;
+
+            return .{
+                .base = address,
+                .length = size,
+                .type = .usable,
+            };
         }
 
         return null;
     }
 };
 
+fn newFreeList() [ranks]?usize {
+    var free_list: [ranks]?usize = undefined;
+    for (0..ranks) |i| {
+        free_list[i] = null;
+    }
+
+    return free_list;
+}
+
 pub const FrameAllocator = struct {
-    const Self = @This();
-
     frames: []Frame,
-    // TODO: realistically, we could probably get away with a u32 here and
-    // cut this memory usage in half. ill need to think about if that is
-    // really the case.
-    free_lists: [ranks][*]usize,
-    lengths: [ranks]usize,
+    free_list: [ranks]?usize,
 
-    pub fn allocFrame(self: *Self) ?usize {
-        return self.alloc(0);
-    }
+    pub fn init(entries: []const *PhysicalMemoryManager.Entry, offset: u64) !FrameAllocator {
+        const pmm: PhysicalMemoryManager = .{
+            .entries = entries,
+            .offset = offset,
+        };
 
-    pub fn allocContiguous(self: *Self, count: usize) ?usize {
-        // TODO: this could actually be a lot more optimized, where we
-        // actually only allocate the number of frames we need instead of
-        // the smallest order that fits. i dont need contiguous memory much
-        // at the moment but when that day comes, here is my message to you:
-        // i have decided this is your problem. X3
-        const order = std.math.log2(count);
-        return self.alloc(order);
-    }
+        const frame_count = pmm.count_usable_frames();
+        const frame_list_size = frame_count * @sizeOf(Frame);
 
-    fn alloc(self: *Self, order: usize) ?usize {
-        if (order >= ranks) std.debug.panic("invalid order {}", .{order});
+        const region = pmm.find_region_for_size(frame_list_size) orelse
+            return error.couldNotFindFrame;
 
-        if (self.lengths[order] == 0) {
-            if (order+1 == ranks) return null;
+        var frames: [*]Frame = @ptrFromInt(region.base + offset);
+        var free_list = newFreeList();
 
-            const frame = self.alloc(order+1) orelse return null;
-            const buddy = if (frame % 2 == 0) frame + 1 else frame - 1;
+        var frame_idx: usize = 0;
+        var region_idx: usize = 0;
+        for (pmm.entries) |entry| {
+            if (entry.type != .usable) continue;
+            defer region_idx += 1;
 
-            self.frames[frame].order = order;
-            self.frames[buddy].order = order;
+            // NOTE: assuming 4KiB frames
+            var entry_frame_count = entry.len() / 4096;
+            var frame_address = entry.start(4096);
 
-            self.frames[frame].allocate();
-            self.insert(order, buddy);
+            while (entry_frame_count > 0) {
+                const order = @min(std.math.log2(entry_frame_count), ranks-1);
+                const order_frame_size = std.math.pow(usize, 2, order);
+                entry_frame_count -= order_frame_size;
+                // NOTE: assuming 4KiB frames
+                defer frame_address += entry_frame_count * 4096;
 
-            return frame;
-        }
+                const start_frame_idx = frame_idx;
+                var free: ?Frame.Free = null;
 
-        const free_list = self.free_lists[order];
-        const frame = free_list[self.lengths[order]];
-        self.lengths[order] -= 1;
+                const next_free = free_list[order];
+                free = .{
+                    .order = order,
+                    .next_free = next_free,
+                    .previous_free = null,
+                };
 
-        self.frames[frame].order = order;
-        self.frames[frame].allocate();
+                if (next_free) |next_free_idx| {
+                    var next_free_frame = &frames[next_free_idx];
+                    if (next_free_frame.free) |*next_free_frame_free| {
+                        next_free_frame_free.previous_free = start_frame_idx;
+                    } else {
+                        std.debug.panic("attempted to insert next free frame on invalid frame", .{});
+                    }
+                }
 
-        return frame;
-    }
+                free_list[order] = start_frame_idx;
+                for (0..order_frame_size) |i| {
+                    frames[start_frame_idx+i] = .{
+                        .free = if (i == 0) free else null,
+                        .region = region_idx,
+                        .flags = .initEmpty(),
+                        // NOTE: assuming 4KiB frames
+                        .address = frame_address + i * 0x1000,
+                    };
 
-    fn insert(self: *Self, order: usize, frame: usize) void {
-        std.debug.assert(order < ranks);
-
-        const free_list = self.free_lists[order];
-        const length = self.lengths[order];
-        for (free_list, 0..length) |element, i| {
-            if (element <= frame) {
-                continue;
-            }
-
-            @memcpy(free_list[i+1 .. length+1], free_list[i..length]);
-            free_list[i] = frame;
-            return;
-        }
-
-        free_list[length] = frame;
-        self.lengths[order] += 1;
-    }
-
-    pub fn free(self: *Self, frame_idx: usize) void {
-        const buddy_idx = if (frame_idx % 2 == 0) frame_idx + 1 else frame_idx - 1;
-
-        const frame = &self.frames[frame_idx];
-        const buddy = self.frames[buddy_idx];
-
-        const order = frame.order;
-        if (!frame.isContiguous(&buddy)) {
-            self.insert(order, frame_idx);
-            return;
-        }
-
-        if (order+1 != ranks) {
-            const free_list = self.free_lists[order];
-            const length = self.lengths[order];
-            for (free_list, 0..length) |element, i| {
-                if (element != buddy_idx) continue;
-
-                @memcpy(free_list[i..length-1], free_list[i+1..length]);
-                self.lengths[order] -= 1;
-
-                frame.order += 1;
-                self.free(frame_idx);
-
-                return;
+                    frame_idx += 1;
+                }
             }
         }
 
-        self.insert(order, frame_idx);
+        serial.log("{} vs {}\n", .{frame_idx, frame_count});
+        std.debug.assert(frame_idx == frame_count);
+        return .{
+            .frames = frames[0..frame_count],
+            .free_list = free_list,
+        };
+    }
+
+    // TODO: feels like this should have a different interface?
+    pub fn allocFrame(self: *FrameAllocator) ?usize {
+        _ = self;
+        return null;
+    }
+
+    // TODO: feels like this should have a different interface?
+    pub fn allocContiguous(self: *FrameAllocator) ?usize {
+        _ = self;
+        @panic("todo");
     }
 };
