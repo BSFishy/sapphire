@@ -2,10 +2,15 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    bsfishy = {
+      url = "github:BSFishy/nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { nixpkgs, flake-utils, ... }:
+    { nixpkgs, flake-utils, bsfishy, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -30,6 +35,7 @@
                 limine
                 pkgs.libisoburn # for xorriso
                 pkgs.qemu
+                bsfishy.packages.${system}.zig-mcp
               ];
 
               shellHook = ''

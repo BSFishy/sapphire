@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "zig-mcp": {
+      "enabled": true,
+      "command": ["zig-mcp"],
+      "type": "local"
+    }
+  }
+}
