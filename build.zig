@@ -64,107 +64,52 @@ pub fn build(b: *std.Build) void {
 
     const kernel_path = kernelModule(b, .{ .target = target, .optimize = optimize, .arch = arch, .ranks = ranks });
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
-    qemu(b, .{ .arch = arch, .iso_path = iso_path });
+    qemu(b, .{ .arch = arch, .iso_path = iso_path, .kernel_path = kernel_path });
 }
 
-fn kernelModule(b: *std.Build, opts: struct {
+fn configureKernelModule(module: *std.Build.Module, arch: Arch) void {
+    switch (arch) {
+        .x86_64 => {
+            module.red_zone = false;
+            module.code_model = .kernel;
+        },
+        else => {},
+    }
+}
+
+const KernelBuildOptions = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     arch: Arch,
     ranks: usize,
-}) std.Build.LazyPath {
-    const sapphire_module = b.createModule(.{
-        .root_source_file = b.path("src/kernel/main.zig"),
-        .target = opts.target,
-        .optimize = opts.optimize,
-        .imports = &.{
-            .{
-                .name = "debug_info",
-                .module = b.createModule(.{
-                    .root_source_file = b.path("tools/dwarf-extract/default.zig"),
-                    .target = opts.target,
-                    .optimize = opts.optimize,
-                })
-            },
-        },
-    });
+};
 
+fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
     const options = b.addOptions();
     options.addOption(usize, "ranks", opts.ranks);
-    sapphire_module.addOptions("options", options);
 
-    switch (opts.arch) {
-        .x86_64 => {
-            sapphire_module.red_zone = false;
-            sapphire_module.code_model = .kernel;
-        },
-        else => {},
-    }
-
-    const sapphire_stage1 = b.addExecutable(.{
-        .name = "sapphire-stage1",
-        .root_module = sapphire_module,
-
-        // seems there is a bug somewhere in the self-hosted zig compiler. using
-        // llvm for now until we can get a build working with the zig compiler.
-        .use_llvm = true,
-    });
-
-    sapphire_stage1.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
-
-    const dwarf_extract_tool = b.addExecutable(.{
-        .name = "dwarf-extract",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/dwarf-extract/main.zig"),
-            .target = b.graph.host,
-            .optimize = .ReleaseSafe,
-        }),
-    });
-
-    const dwarf_extract = b.addRunArtifact(dwarf_extract_tool);
-    dwarf_extract.addFileArg(sapphire_stage1.getEmittedBin());
-    const dwarf_data = dwarf_extract.addOutputFileArg("dwarf_info.zig");
-
-    const dwarf_step = b.step("dwarf", "Extract kernel DWARF data");
-    dwarf_step.dependOn(&dwarf_extract.step);
-
-    const sapphire_with_dwarf_module = b.createModule(.{
+    const kernel_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
-        .imports = &.{
-            .{
-                .name = "debug_info",
-                .module = b.createModule(.{
-                    .root_source_file = dwarf_data,
-                    .target = opts.target,
-                    .optimize = opts.optimize,
-                })
-            },
-        },
     });
-    sapphire_with_dwarf_module.addOptions("options", options);
-    switch (opts.arch) {
-        .x86_64 => {
-            sapphire_with_dwarf_module.red_zone = false;
-            sapphire_with_dwarf_module.code_model = .kernel;
-        },
-        else => {},
-    }
 
-    const sapphire = b.addExecutable(.{
+    kernel_module.addOptions("options", options);
+    configureKernelModule(kernel_module, opts.arch);
+
+    const kernel = b.addExecutable(.{
         .name = "sapphire",
-        .root_module = sapphire_with_dwarf_module,
+        .root_module = kernel_module,
 
         // seems there is a bug somewhere in the self-hosted zig compiler. using
         // llvm for now until we can get a build working with the zig compiler.
         .use_llvm = true,
     });
-    sapphire.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
-    sapphire.step.dependOn(&dwarf_extract.step);
-    b.installArtifact(sapphire);
 
-    return sapphire.getEmittedBin();
+    kernel.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
+
+    b.installArtifact(kernel);
+    return kernel.getEmittedBin();
 }
 
 fn iso(b: *std.Build, opts: struct {
@@ -247,14 +192,15 @@ fn copyFile(b: *std.Build, wf: *std.Build.Step.WriteFile, dir: std.fs.Dir, file:
 fn qemu(b: *std.Build, opts: struct {
     arch: Arch,
     iso_path: std.Build.LazyPath,
+    kernel_path: std.Build.LazyPath,
 }) void {
     const qemu_step = b.step("qemu", "Run sapphire in a qemu virtual machine");
-    const qemu_command = b.addSystemCommand(&.{switch (opts.arch) {
+    const qemu_command = switch (opts.arch) {
         .x86_64 => "qemu-system-x86_64",
         .aarch64 => "qemu-system-aarch64",
         .riscv64 => "qemu-system-riscv64",
         .loongarch64 => "qemu-system-loongarch64",
-    }});
+    };
 
     const machine = switch (opts.arch) {
         .x86_64 => "q35",
@@ -273,18 +219,27 @@ fn qemu(b: *std.Build, opts: struct {
                 .loongarch64 => "la464",
             };
 
-    qemu_command.addArgs(&.{
-        "-M", machine,
-        "-cpu", cpu,
-        "-serial", "stdio",
-        "-display", "none",
-        "-boot", "d",
-        "-d", "guest_errors",
-        "-no-reboot"
+    const panic_runner = b.addExecutable(.{
+        .name = "qemu-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/qemu-runner/main.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
     });
 
-    qemu_command.addArg("-cdrom");
-    qemu_command.addFileArg(opts.iso_path);
+    const run = b.addRunArtifact(panic_runner);
+    run.addArg("--kernel");
+    run.addFileArg(opts.kernel_path);
+    run.addArg("--");
+    run.addArg(qemu_command);
+    run.addArgs(&.{ "-M", machine, "-cpu", cpu, "-serial", "stdio", "-display", "none", "-boot", "d", "-d", "guest_errors", "-no-reboot" });
+    if (opts.arch == .x86_64) {
+        run.addArgs(&.{ "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04" });
+    }
 
-    qemu_step.dependOn(&qemu_command.step);
+    run.addArg("-cdrom");
+    run.addFileArg(opts.iso_path);
+
+    qemu_step.dependOn(&run.step);
 }

@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const debug_info = @import("debug_info");
+const debug = @import("debug.zig");
 const serial = @import("serial.zig");
 const limine = @import("limine.zig");
 const memory = @import("memory.zig");
@@ -37,19 +37,20 @@ fn hcf() noreturn {
     }
 }
 
-fn findSymbol(address: u64) debug_info.Symbol {
-    for (debug_info.symbols) |symbol| {
-        if (symbol.start <= address and address <= symbol.end) {
-            return symbol;
-        }
+fn qemuExit(code: u32) noreturn {
+    switch (builtin.cpu.arch) {
+        .x86_64 => {
+            const port: u16 = 0xf4;
+            asm volatile ("outl %eax, %dx"
+                :
+                : [val] "{eax}" (code),
+                  [port] "{dx}" (port),
+            );
+        },
+        else => {},
     }
 
-    return .{
-        .start = 0,
-        .end = 0,
-        .name = "???",
-        .file_name = "???",
-    };
+    hcf();
 }
 
 pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ra: ?usize) noreturn {
@@ -57,25 +58,15 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ra: 
     serial.log("!KERNEL PANIC!\n", .{});
     serial.log("{s}\n", .{msg});
 
-    var it = std.debug.StackIterator.init(ra, null);
-    while (it.next()) |return_address| {
-        const symbol = findSymbol(return_address);
-        serial.log("{s}: 0x{x} in {s}\n", .{symbol.file_name, return_address, symbol.name});
-    }
+    debug.printStackTrace(ra);
 
-    hcf();
+    qemuExit(0x10);
 }
 
 export fn _start() noreturn {
     serial.setupSerial();
 
-    main() catch |err| {
-        var writer = serial.writer(&.{});
-        defer writer.flush() catch {};
-
-        writer.print("failed to run kernel: {any}\n", .{err}) catch {};
-    };
-
+    main() catch |err| std.debug.panic("failed to run kernel: {any}", .{err});
     hcf();
 }
 
@@ -85,33 +76,30 @@ fn verifyEnvironment() !void {
     }
 
     if (!base_revision.isSupported()) {
-        serial.sendString("Invalid Limine revision. Please use Limine revision 5 or newer.\n");
+        serial.log("Invalid Limine revision. Please use Limine revision 5 or newer.\n", .{});
         return error.errors;
     }
 }
 
 fn setupMemory() !void {
-    var writer = serial.writer(&.{});
-    defer writer.flush() catch {};
-
-    try writer.print("HELLO {*}!\n", .{&writer});
+    serial.log("HELLO {*}!\n", .{&main});
 
     const mm_response = memory_map.response orelse return error.errors;
     const entries = mm_response.entries[0..mm_response.entry_count];
     for (entries) |entry| {
-        try writer.print(" mm entry 0x{x}-0x{x}, {s}\n", .{entry.base, entry.base + entry.length, @tagName(entry.type)});
+        serial.log(" mm entry 0x{x}-0x{x}, {s}\n", .{ entry.base, entry.base + entry.length, @tagName(entry.type) });
     }
 
     const hhdm_response = hhdm.response orelse return error.errors;
-    try writer.print("offset: 0x{x}\n", .{hhdm_response.offset});
+    serial.log("offset: 0x{x}\n", .{hhdm_response.offset});
 
     const frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
     for (frame_allocator.frames[0..15]) |frame| {
-        try writer.print(" frame: {*} - {any}\n", .{@as(*void, @ptrFromInt(frame.address)), frame.free});
+        serial.log(" frame: {*} - {any}\n", .{ @as(*void, @ptrFromInt(frame.address)), frame.free });
     }
 
     for (frame_allocator.free_list, 0..) |free_frame, i| {
-        try writer.print(" free frame at rank {}: {any}\n", .{i, free_frame});
+        serial.log(" free frame at rank {}: {any}\n", .{ i, free_frame });
     }
 }
 
@@ -119,5 +107,5 @@ fn main() !void {
     try verifyEnvironment();
     try setupMemory();
 
-    serial.sendString("Finished boot sequence. Ready to run some code!\n");
+    serial.log("Finished boot sequence. Ready to run some code!\n", .{});
 }
