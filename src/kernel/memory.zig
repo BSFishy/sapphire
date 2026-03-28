@@ -15,6 +15,10 @@ const Flag = enum(usize) {
     }
 };
 
+fn inRegion(start: usize, end: usize, address: usize) bool {
+    return start <= address and address < end;
+}
+
 pub fn regionContainsRegion(address: usize, end_address: usize, start: usize, end: usize) bool {
     if (end < address) {
         return false;
@@ -109,17 +113,14 @@ const PhysicalMemoryManager = struct {
         // better way to find a region, but this should be fine I think.
         for (self.entries) |entry| {
             if (entry.type != .usable) continue;
-            if (entry.length < size) continue;
-
-            const address = entry.base;
-            const length = entry.length;
-
-            entry.base = address + size;
-            entry.length = length - size;
+            const entry_start = entry.start(0x1000);
+            const entry_end = entry.end(0x1000);
+            const aligned_size: u64 = std.mem.alignForward(u64, @intCast(size), 0x1000);
+            if (entry_end - entry_start < aligned_size) continue;
 
             return .{
-                .base = address,
-                .length = size,
+                .base = entry_start,
+                .length = aligned_size,
                 .type = .usable,
             };
         }
@@ -163,52 +164,72 @@ pub const FrameAllocator = struct {
             defer region_idx += 1;
 
             // NOTE: assuming 4KiB frames
-            var entry_frame_count = entry.len() / 4096;
-            var frame_address = entry.start(4096);
+            const entry_start = entry.start(0x1000);
+            const entry_end = entry.end(0x1000);
+            var entry_frame_count: usize = @intCast((entry_end - entry_start) / 0x1000);
 
+            var start_address = entry_start;
             while (entry_frame_count > 0) {
-                const order = @min(std.math.log2(entry_frame_count), ranks-1);
-                const order_frame_size = std.math.pow(usize, 2, order);
-                entry_frame_count -= order_frame_size;
-                // NOTE: assuming 4KiB frames
-                defer frame_address += entry_frame_count * 4096;
+                const inFrameAllocator = inRegion(region.base, region.base + frame_list_size, start_address);
+                var run_size = blk: {
+                    var len: usize = 1;
+                    while (true) : (len += 1) {
+                        const next_address = start_address + len * 0x1000;
+                        if (next_address >= entry_end) break :blk len;
 
-                const start_frame_idx = frame_idx;
-                var free: ?Frame.Free = null;
-
-                const next_free = free_list[order];
-                free = .{
-                    .order = order,
-                    .next_free = next_free,
-                    .previous_free = null,
-                };
-
-                if (next_free) |next_free_idx| {
-                    var next_free_frame = &frames[next_free_idx];
-                    if (next_free_frame.free) |*next_free_frame_free| {
-                        next_free_frame_free.previous_free = start_frame_idx;
-                    } else {
-                        std.debug.panic("attempted to insert next free frame on invalid frame", .{});
+                        const idxInFrameAllocator = inRegion(region.base, region.base + frame_list_size, next_address);
+                        if (inFrameAllocator != idxInFrameAllocator) break :blk len;
                     }
-                }
+                };
+                if (run_size == 0) std.debug.panic("invalid region 0x{x} size of zero", .{start_address});
 
-                free_list[order] = start_frame_idx;
-                for (0..order_frame_size) |i| {
-                    frames[start_frame_idx+i] = .{
-                        .free = if (i == 0) free else null,
-                        .region = region_idx,
-                        .flags = .initEmpty(),
-                        // NOTE: assuming 4KiB frames
-                        .address = frame_address + i * 0x1000,
-                    };
+                while (run_size > 0) {
+                    const order = @min(std.math.log2(run_size), ranks - 1);
+                    const order_frame_size = std.math.pow(usize, 2, order);
+                    entry_frame_count -= order_frame_size;
 
-                    frame_idx += 1;
+                    const start_frame_idx = frame_idx;
+                    const free = if (!inFrameAllocator) blk: {
+                        const next_free = free_list[order];
+                        if (next_free) |next_free_idx| {
+                            var next_free_frame = &frames[next_free_idx];
+                            if (next_free_frame.free) |*next_free_frame_free| {
+                                next_free_frame_free.previous_free = start_frame_idx;
+                            } else {
+                                std.debug.panic("attempted to insert next free frame on invalid frame", .{});
+                            }
+                        }
+
+                        free_list[order] = start_frame_idx;
+                        break :blk Frame.Free{
+                            .order = order,
+                            .next_free = next_free,
+                            .previous_free = null,
+                        };
+                    } else null;
+
+                    for (0..order_frame_size) |i| {
+                        frames[start_frame_idx + i] = .{
+                            .free = if (i == 0) free else null,
+                            .region = region_idx,
+                            .flags = if (free) |_| blk: {
+                                var flags = Frame.Flags.initEmpty();
+                                flags.set(Flag.allocated.value());
+                                break :blk flags;
+                            } else .initEmpty(),
+                            .address = start_address + i * 0x1000,
+                        };
+
+                        frame_idx += 1;
+                    }
+
+                    start_address += order_frame_size * 0x1000;
+                    run_size -= order_frame_size;
                 }
             }
         }
 
-        serial.log("{} vs {}\n", .{frame_idx, frame_count});
-        std.debug.assert(frame_idx == frame_count);
+        if (frame_idx != frame_count) std.debug.panic("didnt write enough frames. expected {} but wrote {}", .{ frame_count, frame_idx });
         return .{
             .frames = frames[0..frame_count],
             .free_list = free_list,
