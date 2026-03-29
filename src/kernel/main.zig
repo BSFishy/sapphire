@@ -93,9 +93,34 @@ fn setupMemory() !void {
     const hhdm_response = hhdm.response orelse return error.errors;
     serial.log("offset: 0x{x}\n", .{hhdm_response.offset});
 
-    const frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
+    var frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
     for (frame_allocator.frames[0..15]) |frame| {
         serial.log(" frame: {*} - {any}\n", .{ @as(*void, @ptrFromInt(frame.address)), frame.free });
+    }
+
+    for (frame_allocator.free_list, 0..) |free_frame, i| {
+        serial.log(" free frame at rank {}: {any}\n", .{ i, free_frame });
+    }
+
+    {
+        const frame_idx = frame_allocator.allocFrame();
+        serial.log("allocated frame: {any}\n", .{frame_idx});
+    }
+    {
+        const frame_idx = frame_allocator.allocFrame();
+        serial.log("allocated frame: {any}\n", .{frame_idx});
+    }
+    {
+        const frame_idx = frame_allocator.allocFrame();
+        serial.log("allocated frame: {any}\n", .{frame_idx});
+    }
+    {
+        const frame_idx = frame_allocator.allocFrame();
+        serial.log("allocated frame: {any}\n", .{frame_idx});
+    }
+    {
+        const frame_idx = frame_allocator.allocFrame();
+        serial.log("allocated frame: {any}\n", .{frame_idx});
     }
 
     for (frame_allocator.free_list, 0..) |free_frame, i| {

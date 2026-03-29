@@ -142,6 +142,52 @@ pub const FrameAllocator = struct {
     frames: []Frame,
     free_list: [ranks]?usize,
 
+    fn freelistPop(self: *FrameAllocator, rank: usize) ?usize {
+        if (rank >= ranks) std.debug.panic("invalid rank size {}", .{rank});
+
+        const head_idx = self.free_list[rank] orelse return null;
+        var head_frame = &self.frames[head_idx];
+        const head_free = head_frame.free orelse std.debug.panic("frame {} on freelist has no free", .{head_idx});
+
+        self.free_list[rank] = head_free.next_free;
+        if (head_free.next_free) |next_idx| {
+            var next_frame = &self.frames[next_idx];
+            if (next_frame.free) |*next_free| {
+                next_free.previous_free = null;
+            } else {
+                std.debug.panic("attempted to update next free frame on invalid frame", .{});
+            }
+        }
+
+        head_frame.free = null;
+        head_frame.allocate();
+
+        return head_idx;
+    }
+
+    fn freelistPush(self: *FrameAllocator, rank: usize, frame_idx: usize) void {
+        if (rank >= ranks) std.debug.panic("invalid rank size {}", .{rank});
+
+        var frame = &self.frames[frame_idx];
+        frame.deallocate();
+        frame.free = .{
+            .order = rank,
+            .next_free = self.free_list[rank],
+            .previous_free = null,
+        };
+
+        if (self.free_list[rank]) |old_head_idx| {
+            var old_head = &self.frames[old_head_idx];
+            if (old_head.free) |*old_head_free| {
+                old_head_free.previous_free = frame_idx;
+            } else {
+                std.debug.panic("attempted to update free list head on invalid frame", .{});
+            }
+        }
+
+        self.free_list[rank] = frame_idx;
+    }
+
     pub fn init(entries: []const *PhysicalMemoryManager.Entry, offset: u64) !FrameAllocator {
         const pmm: PhysicalMemoryManager = .{
             .entries = entries,
@@ -236,15 +282,31 @@ pub const FrameAllocator = struct {
         };
     }
 
-    // TODO: feels like this should have a different interface?
-    pub fn allocFrame(self: *FrameAllocator) ?usize {
-        _ = self;
-        return null;
+    fn allocRank(self: *FrameAllocator, rank: usize) ?usize {
+        // happy path there is a free block at the desired rank
+        if (self.freelistPop(rank)) |rank_free| return rank_free;
+
+        if (rank + 1 == ranks) return null;
+
+        const higher_rank = self.allocRank(rank + 1) orelse return null;
+        const rank_size = std.math.pow(usize, 2, rank);
+        const buddy_idx = higher_rank + rank_size;
+
+        if (buddy_idx >= self.frames.len) return null;
+        self.freelistPush(rank, buddy_idx);
+
+        return higher_rank;
     }
 
     // TODO: feels like this should have a different interface?
-    pub fn allocContiguous(self: *FrameAllocator) ?usize {
-        _ = self;
-        @panic("todo");
+    pub fn allocFrame(self: *FrameAllocator) ?usize {
+        return self.allocRank(0);
+    }
+
+    // TODO: feels like this should have a different interface?
+    pub fn allocContiguous(self: *FrameAllocator, count: usize) ?usize {
+        const rank = std.math.log2(count);
+        if (rank >= ranks) return null;
+        return self.allocRank(rank);
     }
 };
