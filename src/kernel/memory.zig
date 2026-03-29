@@ -40,19 +40,27 @@ pub const Frame = struct {
         next_free: ?usize,
         previous_free: ?usize,
     };
+    const Allocated = struct {
+        order: usize,
+        start_idx: usize,
+    };
+    const State = union(enum) {
+        free: Free,
+        allocated: Allocated,
+    };
 
-    free: ?Free,
+    state: ?State,
 
     region: usize,
     flags: Flags,
     address: usize,
 
-    pub fn isContiguous(self: *const Frame, other: *const Frame) bool {
+    pub fn isContiguous(self: *const Frame, other: *const Frame, order: usize) bool {
         const lower = if (self.address > other.address) other else self;
         const higher = if (self.address < other.address) other else self;
 
         // NOTE: assumes 4KiB frames
-        const size = std.math.pow(usize, 2, self.order) * 0x1000;
+        const size = std.math.pow(usize, 2, order) * 0x1000;
         return (lower.address + size) == higher.address;
     }
 
@@ -142,27 +150,72 @@ pub const FrameAllocator = struct {
     frames: []Frame,
     free_list: [ranks]?usize,
 
+    fn markAllocated(self: *FrameAllocator, frame_idx: usize, order: usize) void {
+        var frame = &self.frames[frame_idx];
+        frame.state = .{ .allocated = .{ .order = order, .start_idx = frame_idx } };
+        frame.allocate();
+    }
+
     fn freelistPop(self: *FrameAllocator, rank: usize) ?usize {
         if (rank >= ranks) std.debug.panic("invalid rank size {}", .{rank});
 
         const head_idx = self.free_list[rank] orelse return null;
         var head_frame = &self.frames[head_idx];
-        const head_free = head_frame.free orelse std.debug.panic("frame {} on freelist has no free", .{head_idx});
+        const head_state = head_frame.state orelse std.debug.panic("frame {} on freelist has no state", .{head_idx});
+        const head_free = switch (head_state) {
+            .free => |free_state| free_state,
+            .allocated => std.debug.panic("frame {} on freelist is allocated", .{head_idx}),
+        };
 
         self.free_list[rank] = head_free.next_free;
         if (head_free.next_free) |next_idx| {
-            var next_frame = &self.frames[next_idx];
-            if (next_frame.free) |*next_free| {
-                next_free.previous_free = null;
-            } else {
-                std.debug.panic("attempted to update next free frame on invalid frame", .{});
+            const next_frame = &self.frames[next_idx];
+            var next_state = next_frame.state orelse std.debug.panic("attempted to update next free frame on invalid frame", .{});
+            switch (next_state) {
+                .free => |*next_free| next_free.previous_free = null,
+                .allocated => std.debug.panic("attempted to update next free frame on allocated frame", .{}),
             }
         }
 
-        head_frame.free = null;
-        head_frame.allocate();
+        head_frame.state = null;
+        head_frame.deallocate();
 
         return head_idx;
+    }
+
+    fn freelistRemove(self: *FrameAllocator, rank: usize, frame_idx: usize) void {
+        if (rank >= ranks) std.debug.panic("invalid rank size {}", .{rank});
+
+        var frame = &self.frames[frame_idx];
+        const frame_state = frame.state orelse std.debug.panic("attempted to remove free frame with no state", .{});
+        const frame_free = switch (frame_state) {
+            .free => |free_state| free_state,
+            .allocated => std.debug.panic("attempted to remove allocated frame from freelist", .{}),
+        };
+        if (frame_free.order != rank) std.debug.panic("freelist remove order mismatch {} != {}", .{ frame_free.order, rank });
+
+        if (frame_free.previous_free) |prev_idx| {
+            const prev_frame = &self.frames[prev_idx];
+            var prev_state = prev_frame.state orelse std.debug.panic("invalid previous free frame", .{});
+            switch (prev_state) {
+                .free => |*prev_free| prev_free.next_free = frame_free.next_free,
+                .allocated => std.debug.panic("previous free frame is allocated", .{}),
+            }
+        } else {
+            self.free_list[rank] = frame_free.next_free;
+        }
+
+        if (frame_free.next_free) |next_idx| {
+            const next_frame = &self.frames[next_idx];
+            var next_state = next_frame.state orelse std.debug.panic("invalid next free frame", .{});
+            switch (next_state) {
+                .free => |*next_free| next_free.previous_free = frame_free.previous_free,
+                .allocated => std.debug.panic("next free frame is allocated", .{}),
+            }
+        }
+
+        frame.state = null;
+        frame.deallocate();
     }
 
     fn freelistPush(self: *FrameAllocator, rank: usize, frame_idx: usize) void {
@@ -170,18 +223,14 @@ pub const FrameAllocator = struct {
 
         var frame = &self.frames[frame_idx];
         frame.deallocate();
-        frame.free = .{
-            .order = rank,
-            .next_free = self.free_list[rank],
-            .previous_free = null,
-        };
+        frame.state = .{ .free = .{ .order = rank, .next_free = self.free_list[rank], .previous_free = null } };
 
         if (self.free_list[rank]) |old_head_idx| {
-            var old_head = &self.frames[old_head_idx];
-            if (old_head.free) |*old_head_free| {
-                old_head_free.previous_free = frame_idx;
-            } else {
-                std.debug.panic("attempted to update free list head on invalid frame", .{});
+            const old_head = &self.frames[old_head_idx];
+            var old_head_state = old_head.state orelse std.debug.panic("attempted to update free list head on invalid frame", .{});
+            switch (old_head_state) {
+                .free => |*old_head_free| old_head_free.previous_free = frame_idx,
+                .allocated => std.debug.panic("attempted to update free list head on allocated frame", .{}),
             }
         }
 
@@ -235,34 +284,30 @@ pub const FrameAllocator = struct {
                     entry_frame_count -= order_frame_size;
 
                     const start_frame_idx = frame_idx;
-                    const free = if (!inFrameAllocator) blk: {
+                    const state = if (!inFrameAllocator) blk: {
                         const next_free = free_list[order];
                         if (next_free) |next_free_idx| {
-                            var next_free_frame = &frames[next_free_idx];
-                            if (next_free_frame.free) |*next_free_frame_free| {
-                                next_free_frame_free.previous_free = start_frame_idx;
-                            } else {
-                                std.debug.panic("attempted to insert next free frame on invalid frame", .{});
+                            const next_free_frame = &frames[next_free_idx];
+                            var next_free_state = next_free_frame.state orelse std.debug.panic("attempted to insert next free frame on invalid frame", .{});
+                            switch (next_free_state) {
+                                .free => |*next_free_frame_free| next_free_frame_free.previous_free = start_frame_idx,
+                                .allocated => std.debug.panic("attempted to insert next free frame on allocated frame", .{}),
                             }
                         }
 
                         free_list[order] = start_frame_idx;
-                        break :blk Frame.Free{
-                            .order = order,
-                            .next_free = next_free,
-                            .previous_free = null,
-                        };
+                        break :blk Frame.State{ .free = .{ .order = order, .next_free = next_free, .previous_free = null } };
                     } else null;
 
                     for (0..order_frame_size) |i| {
                         frames[start_frame_idx + i] = .{
-                            .free = if (i == 0) free else null,
+                            .state = if (i == 0) state else null,
                             .region = region_idx,
-                            .flags = if (free) |_| blk: {
+                            .flags = blk: {
                                 var flags = Frame.Flags.initEmpty();
-                                flags.set(Flag.allocated.value());
+                                if (inFrameAllocator) flags.set(Flag.reserved.value());
                                 break :blk flags;
-                            } else .initEmpty(),
+                            },
                             .address = start_address + i * 0x1000,
                         };
 
@@ -284,7 +329,10 @@ pub const FrameAllocator = struct {
 
     fn allocRank(self: *FrameAllocator, rank: usize) ?usize {
         // happy path there is a free block at the desired rank
-        if (self.freelistPop(rank)) |rank_free| return rank_free;
+        if (self.freelistPop(rank)) |rank_free| {
+            self.markAllocated(rank_free, rank);
+            return rank_free;
+        }
 
         if (rank + 1 == ranks) return null;
 
@@ -295,18 +343,100 @@ pub const FrameAllocator = struct {
         if (buddy_idx >= self.frames.len) return null;
         self.freelistPush(rank, buddy_idx);
 
+        self.markAllocated(higher_rank, rank);
+
         return higher_rank;
     }
 
-    // TODO: feels like this should have a different interface?
     pub fn allocFrame(self: *FrameAllocator) ?usize {
-        return self.allocRank(0);
+        const frame_idx = self.allocRank(0) orelse return null;
+        const frame = self.frames[frame_idx];
+        return frame.address;
     }
 
-    // TODO: feels like this should have a different interface?
     pub fn allocContiguous(self: *FrameAllocator, count: usize) ?usize {
         const rank = std.math.log2(count);
         if (rank >= ranks) return null;
-        return self.allocRank(rank);
+
+        const frame_idx = self.allocRank(rank) orelse return null;
+        const frame = self.frames[frame_idx];
+        return frame.address;
+    }
+
+    pub fn free(self: *FrameAllocator, address: usize) void {
+        if (address % 0x1000 != 0) std.debug.panic("invalid address to free {}", .{address});
+
+        var low: usize = 0;
+        var high: usize = self.frames.len;
+        var frame_idx: ?usize = null;
+        while (low < high) {
+            const mid = (low + high) / 2;
+            const mid_address = self.frames[mid].address;
+            if (mid_address == address) {
+                frame_idx = mid;
+                break;
+            }
+
+            if (mid_address < address) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+
+        const start_idx = frame_idx orelse std.debug.panic("attempted to free non-frame address {}", .{address});
+        var frame = &self.frames[start_idx];
+        const state = frame.state orelse std.debug.panic("attempted to free frame with no state {}", .{address});
+        const allocated = switch (state) {
+            .allocated => |alloc| alloc,
+            .free => std.debug.panic("attempted to free free frame {}", .{address}),
+        };
+        if (allocated.start_idx != start_idx) std.debug.panic("attempted to free non-start frame {}", .{address});
+
+        var order = allocated.order;
+        frame.state = null;
+        frame.deallocate();
+
+        var base_idx = start_idx;
+        var base_address = frame.address;
+        while (order + 1 < ranks) : (order += 1) {
+            const size_bytes = (std.math.pow(usize, 2, order)) * 0x1000;
+            const buddy_address = base_address ^ size_bytes;
+
+            var buddy_low: usize = 0;
+            var buddy_high: usize = self.frames.len;
+            var buddy_idx: ?usize = null;
+            while (buddy_low < buddy_high) {
+                const mid = (buddy_low + buddy_high) / 2;
+                const mid_address = self.frames[mid].address;
+                if (mid_address == buddy_address) {
+                    buddy_idx = mid;
+                    break;
+                }
+
+                if (mid_address < buddy_address) {
+                    buddy_low = mid + 1;
+                } else {
+                    buddy_high = mid;
+                }
+            }
+
+            const buddy_frame_idx = buddy_idx orelse break;
+            const buddy_frame = &self.frames[buddy_frame_idx];
+            const buddy_state = buddy_frame.state orelse break;
+            const buddy_free = switch (buddy_state) {
+                .free => |buddy_free_state| buddy_free_state,
+                .allocated => break,
+            };
+            if (buddy_free.order != order) break;
+
+            self.freelistRemove(order, buddy_frame_idx);
+            if (buddy_address < base_address) {
+                base_idx = buddy_frame_idx;
+                base_address = buddy_address;
+            }
+        }
+
+        self.freelistPush(order, base_idx);
     }
 };

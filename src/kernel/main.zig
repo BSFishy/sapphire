@@ -95,32 +95,33 @@ fn setupMemory() !void {
 
     var frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
     for (frame_allocator.frames[0..15]) |frame| {
-        serial.log(" frame: {*} - {any}\n", .{ @as(*void, @ptrFromInt(frame.address)), frame.free });
+        serial.log(" frame: {*} - {any}\n", .{ @as(*void, @ptrFromInt(frame.address)), frame.state });
     }
 
     for (frame_allocator.free_list, 0..) |free_frame, i| {
         serial.log(" free frame at rank {}: {any}\n", .{ i, free_frame });
     }
 
-    {
-        const frame_idx = frame_allocator.allocFrame();
-        serial.log("allocated frame: {any}\n", .{frame_idx});
+    if (frame_allocator.allocFrame()) |address| {
+        serial.log("allocated frame: 0x{x}\n", .{address});
+        frame_allocator.free(address);
+    } else {
+        serial.log("unable to allocate frame\n", .{});
     }
-    {
-        const frame_idx = frame_allocator.allocFrame();
-        serial.log("allocated frame: {any}\n", .{frame_idx});
-    }
-    {
-        const frame_idx = frame_allocator.allocFrame();
-        serial.log("allocated frame: {any}\n", .{frame_idx});
-    }
-    {
-        const frame_idx = frame_allocator.allocFrame();
-        serial.log("allocated frame: {any}\n", .{frame_idx});
-    }
-    {
-        const frame_idx = frame_allocator.allocFrame();
-        serial.log("allocated frame: {any}\n", .{frame_idx});
+
+    if (frame_allocator.allocFrame()) |address| {
+        serial.log("allocated frame: 0x{x}\n", .{address});
+
+        if (frame_allocator.allocFrame()) |address2| {
+            serial.log("allocated frame: 0x{x}\n", .{address2});
+            frame_allocator.free(address2);
+        } else {
+            serial.log("unable to allocate frame\n", .{});
+        }
+
+        frame_allocator.free(address);
+    } else {
+        serial.log("unable to allocate frame\n", .{});
     }
 
     for (frame_allocator.free_list, 0..) |free_frame, i| {
