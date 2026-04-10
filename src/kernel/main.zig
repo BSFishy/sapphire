@@ -93,39 +93,24 @@ fn setupMemory() !void {
     const hhdm_response = hhdm.response orelse return error.errors;
     serial.log("offset: 0x{x}\n", .{hhdm_response.offset});
 
-    var frame_allocator: memory.FrameAllocator = try .init(entries, hhdm_response.offset);
-    for (frame_allocator.frames[0..15]) |frame| {
-        serial.log(" frame: {*} - {any}\n", .{ @as(*void, @ptrFromInt(frame.address)), frame.state });
+    var heap_allocator: memory.HeapAllocator = .initAll(entries, hhdm_response.offset);
+
+    {
+        const heap_ptr = heap_allocator.alloc(64) orelse return error.insufficientMemory;
+        defer heap_allocator.free(heap_ptr);
+        serial.log("heap alloc @ 0x{x}\n", .{@intFromPtr(heap_ptr)});
     }
 
-    for (frame_allocator.free_list, 0..) |free_frame, i| {
-        serial.log(" free frame at rank {}: {any}\n", .{ i, free_frame });
-    }
+    {
+        const heap_ptr = heap_allocator.alloc(64) orelse return error.insufficientMemory;
+        defer heap_allocator.free(heap_ptr);
+        serial.log("heap alloc @ 0x{x}\n", .{@intFromPtr(heap_ptr)});
 
-    if (frame_allocator.allocFrame()) |address| {
-        serial.log("allocated frame: 0x{x}\n", .{address});
-        frame_allocator.free(address);
-    } else {
-        serial.log("unable to allocate frame\n", .{});
-    }
-
-    if (frame_allocator.allocFrame()) |address| {
-        serial.log("allocated frame: 0x{x}\n", .{address});
-
-        if (frame_allocator.allocFrame()) |address2| {
-            serial.log("allocated frame: 0x{x}\n", .{address2});
-            frame_allocator.free(address2);
-        } else {
-            serial.log("unable to allocate frame\n", .{});
+        {
+            const heap_ptr2 = heap_allocator.alloc(64) orelse return error.insufficientMemory;
+            defer heap_allocator.free(heap_ptr2);
+            serial.log("heap alloc @ 0x{x}\n", .{@intFromPtr(heap_ptr2)});
         }
-
-        frame_allocator.free(address);
-    } else {
-        serial.log("unable to allocate frame\n", .{});
-    }
-
-    for (frame_allocator.free_list, 0..) |free_frame, i| {
-        serial.log(" free frame at rank {}: {any}\n", .{ i, free_frame });
     }
 }
 
