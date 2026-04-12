@@ -59,14 +59,33 @@ pub fn build(b: *std.Build) void {
     const ranks = b.option(usize, "ranks", "Number of ranks in the frame allocator") orelse 10;
 
     const query = targetQueryForArch(arch);
-    const target = b.resolveTargetQuery(query);
+    const kernel_target = b.resolveTargetQuery(query);
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const kernel_path = kernelModule(b, .{ .target = target, .optimize = optimize, .arch = arch, .ranks = ranks });
+    const wasm_module = wasmModule(b, .{ .target = target, .optimize = optimize });
+    const kernel_path = kernelModule(b, .{
+        .target = kernel_target,
+        .optimize = optimize,
+        .arch = arch,
+        .ranks = ranks,
+        .wasm_module = wasm_module,
+    });
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
     qemu(b, .{ .arch = arch, .iso_path = iso_path, .kernel_path = kernel_path });
 
     myModuleWasm(b, .{ .optimize = optimize });
+}
+
+fn wasmModule(b: *std.Build, args: struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+}) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/wasm/root.zig"),
+        .target = args.target,
+        .optimize = args.optimize,
+    });
 }
 
 fn configureKernelModule(module: *std.Build.Module, arch: Arch) void {
@@ -84,6 +103,7 @@ const KernelBuildOptions = struct {
     optimize: std.builtin.OptimizeMode,
     arch: Arch,
     ranks: usize,
+    wasm_module: *std.Build.Module,
 };
 
 fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
@@ -94,6 +114,9 @@ fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
+        .imports = &.{
+            .{ .name = "wasm", .module = opts.wasm_module },
+        },
     });
 
     kernel_module.addOptions("options", options);

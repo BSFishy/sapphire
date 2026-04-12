@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const wasm = @import("wasm");
 const debug = @import("debug.zig");
 const serial = @import("serial.zig");
 const limine = @import("limine.zig");
@@ -118,5 +119,6 @@ fn main() !void {
     try verifyEnvironment();
     try setupMemory();
 
+    serial.log("Result is {}\n", .{wasm.add(1, 2)});
     serial.log("Finished boot sequence. Ready to run some code!\n", .{});
 }
