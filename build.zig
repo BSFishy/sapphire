@@ -65,6 +65,8 @@ pub fn build(b: *std.Build) void {
     const kernel_path = kernelModule(b, .{ .target = target, .optimize = optimize, .arch = arch, .ranks = ranks });
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
     qemu(b, .{ .arch = arch, .iso_path = iso_path, .kernel_path = kernel_path });
+
+    myModuleWasm(b, .{ .optimize = optimize });
 }
 
 fn configureKernelModule(module: *std.Build.Module, arch: Arch) void {
@@ -112,6 +114,34 @@ fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
     return kernel.getEmittedBin();
 }
 
+fn myModuleWasm(b: *std.Build, opts: struct {
+    optimize: std.builtin.OptimizeMode,
+}) void {
+    const wasm_query: std.Target.Query = .{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .abi = .none,
+    };
+    const wasm_target = b.resolveTargetQuery(wasm_query);
+
+    const wasm_module = b.createModule(.{
+        .root_source_file = b.path("src/my-module/main.zig"),
+        .target = wasm_target,
+        .optimize = opts.optimize,
+    });
+
+    const wasm = b.addExecutable(.{
+        .name = "my_module",
+        .root_module = wasm_module,
+    });
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    wasm.link_gc_sections = false;
+
+    const install_wasm = b.addInstallFileWithDir(wasm.getEmittedBin(), .prefix, "share/my_module.wasm");
+    b.getInstallStep().dependOn(&install_wasm.step);
+}
+
 fn iso(b: *std.Build, opts: struct {
     kernel_path: std.Build.LazyPath,
     arch: Arch,
@@ -138,10 +168,9 @@ fn iso(b: *std.Build, opts: struct {
 
             const xorriso = b.addSystemCommand(&.{"xorriso"});
             xorriso.addArgs(&.{
-                "-as", "mkisofs", "-R", "-r", "-J", "-b", "boot/limine/limine-bios-cd.bin",
-                "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table", "-hfsplus",
-                "-apm-block-size", "2048", "--efi-boot", "boot/limine/limine-uefi-cd.bin",
-                "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
+                "-as",           "mkisofs",                        "-R",             "-r",               "-J",                       "-b",              "boot/limine/limine-bios-cd.bin",
+                "-no-emul-boot", "-boot-load-size",                "4",              "-boot-info-table", "-hfsplus",                 "-apm-block-size", "2048",
+                "--efi-boot",    "boot/limine/limine-uefi-cd.bin", "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
             });
             xorriso.addDirectoryArg(wf.getDirectory());
             xorriso.addArg("-o");
@@ -160,9 +189,8 @@ fn iso(b: *std.Build, opts: struct {
 
             const xorriso = b.addSystemCommand(&.{"xorriso"});
             xorriso.addArgs(&.{
-                "-as", "mkisofs", "-R", "-r", "-J",
-                "--efi-boot", "boot/limine/limine-uefi-cd.bin",
-                "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
+                "-as",        "mkisofs",                        "-R",             "-r",               "-J",
+                "--efi-boot", "boot/limine/limine-uefi-cd.bin", "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
             });
             xorriso.addDirectoryArg(wf.getDirectory());
             xorriso.addArg("-o");
@@ -204,20 +232,17 @@ fn qemu(b: *std.Build, opts: struct {
 
     const machine = switch (opts.arch) {
         .x86_64 => "q35",
-        .aarch64,
-        .riscv64,
-        .loongarch64 => "virt",
+        .aarch64, .riscv64, .loongarch64 => "virt",
     };
 
     const cpu = if (opts.arch.toStd() == builtin.cpu.arch)
-            "max"
-        else
-            switch (opts.arch) {
-                .x86_64 => "qemu64",
-                .aarch64 => "cortex-a72",
-                .riscv64 => "rv64",
-                .loongarch64 => "la464",
-            };
+        "max"
+    else switch (opts.arch) {
+        .x86_64 => "qemu64",
+        .aarch64 => "cortex-a72",
+        .riscv64 => "rv64",
+        .loongarch64 => "la464",
+    };
 
     const panic_runner = b.addExecutable(.{
         .name = "qemu-runner",

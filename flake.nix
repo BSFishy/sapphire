@@ -30,6 +30,7 @@
                 pkgs.zls
                 pkgs.lldb
                 pkgs.llvmPackages.lldbPlugins.llef
+                pkgs.wabt
 
                 # development tools
                 limine
