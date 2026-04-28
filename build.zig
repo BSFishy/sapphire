@@ -74,7 +74,8 @@ pub fn build(b: *std.Build) void {
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
     qemu(b, .{ .arch = arch, .iso_path = iso_path, .kernel_path = kernel_path });
 
-    myModuleWasm(b, .{ .optimize = optimize });
+    const my_wasm_module = myModuleWasm(b, .{ .optimize = optimize });
+    exeModule(b, .{ .target = target, .optimize = optimize, .wasm_module = wasm_module, .my_wasm_module = my_wasm_module });
 }
 
 fn wasmModule(b: *std.Build, args: struct {
@@ -86,6 +87,35 @@ fn wasmModule(b: *std.Build, args: struct {
         .target = args.target,
         .optimize = args.optimize,
     });
+}
+
+fn exeModule(b: *std.Build, args: struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    wasm_module: *std.Build.Module,
+    my_wasm_module: std.Build.LazyPath,
+}) void {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/exe/main.zig"),
+        .target = args.target,
+        .optimize = args.optimize,
+        .imports = &.{
+            .{ .name = "wasm", .module = args.wasm_module },
+        },
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "sapphire",
+        .root_module = module,
+    });
+
+    b.installArtifact(exe);
+
+    const run_step = b.step("run", "Run the runtime");
+    const exe_run = b.addRunArtifact(exe);
+    exe_run.addFileArg(args.my_wasm_module);
+
+    run_step.dependOn(&exe_run.step);
 }
 
 fn configureKernelModule(module: *std.Build.Module, arch: Arch) void {
@@ -132,14 +162,15 @@ fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
     });
 
     kernel.setLinkerScript(b.path(b.fmt("linker-scripts/linker-{s}.lds", .{@tagName(opts.arch)})));
+    const install_kernel = b.addInstallFileWithDir(kernel.getEmittedBin(), .prefix, "bin/sapphire.kernel");
+    b.getInstallStep().dependOn(&install_kernel.step);
 
-    b.installArtifact(kernel);
     return kernel.getEmittedBin();
 }
 
 fn myModuleWasm(b: *std.Build, opts: struct {
     optimize: std.builtin.OptimizeMode,
-}) void {
+}) std.Build.LazyPath {
     const wasm_query: std.Target.Query = .{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
@@ -163,6 +194,8 @@ fn myModuleWasm(b: *std.Build, opts: struct {
 
     const install_wasm = b.addInstallFileWithDir(wasm.getEmittedBin(), .prefix, "share/my_module.wasm");
     b.getInstallStep().dependOn(&install_wasm.step);
+
+    return wasm.getEmittedBin();
 }
 
 fn iso(b: *std.Build, opts: struct {
