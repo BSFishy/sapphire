@@ -203,10 +203,10 @@ fn iso(b: *std.Build, opts: struct {
     arch: Arch,
     limine_share_path: ?[]const u8 = undefined,
 }) std.Build.LazyPath {
-    const limine_share_path = std.process.getEnvVarOwned(b.allocator, "LIMINE_SHARE_PATH") catch @panic("Invalid limine share path");
+    const limine_share_path = b.graph.environ_map.get("LIMINE_SHARE_PATH") orelse @panic("Invalid limine share path");
     defer b.allocator.free(limine_share_path);
 
-    const limine_share = std.fs.openDirAbsolute(limine_share_path, .{}) catch unreachable;
+    const limine_share = std.Io.Dir.openDirAbsolute(b.graph.io, limine_share_path, .{}) catch unreachable;
 
     const wf = b.addWriteFiles();
     _ = wf.addCopyFile(opts.kernel_path, "boot/kernel.elf");
@@ -266,8 +266,8 @@ fn iso(b: *std.Build, opts: struct {
     return iso_path;
 }
 
-fn copyFile(b: *std.Build, wf: *std.Build.Step.WriteFile, dir: std.fs.Dir, file: []const u8, sub_path: []const u8) std.Build.LazyPath {
-    const file_contents = dir.readFileAlloc(b.allocator, file, 1024 * 1024 * 1024) catch unreachable;
+fn copyFile(b: *std.Build, wf: *std.Build.Step.WriteFile, dir: std.Io.Dir, file: []const u8, sub_path: []const u8) std.Build.LazyPath {
+    const file_contents = dir.readFileAlloc(b.graph.io, file, b.allocator, .unlimited) catch unreachable;
     defer b.allocator.free(file_contents);
 
     return wf.add(sub_path, file_contents);
@@ -300,20 +300,7 @@ fn qemu(b: *std.Build, opts: struct {
         .loongarch64 => "la464",
     };
 
-    const panic_runner = b.addExecutable(.{
-        .name = "qemu-runner",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/qemu-runner/main.zig"),
-            .target = b.graph.host,
-            .optimize = .ReleaseSafe,
-        }),
-    });
-
-    const run = b.addRunArtifact(panic_runner);
-    run.addArg("--kernel");
-    run.addFileArg(opts.kernel_path);
-    run.addArg("--");
-    run.addArg(qemu_command);
+    const run = b.addSystemCommand(&.{ qemu_command });
     run.addArgs(&.{ "-M", machine, "-cpu", cpu, "-serial", "stdio", "-display", "none", "-boot", "d", "-d", "guest_errors", "-no-reboot" });
     if (opts.arch == .x86_64) {
         run.addArgs(&.{ "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04" });

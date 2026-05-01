@@ -1,18 +1,18 @@
 const std = @import("std");
 const wasm = @import("wasm");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const gpa = std.heap.page_allocator;
 
-    var args = std.process.argsWithAllocator(gpa) catch std.debug.panic("reading arguments", .{});
+    var args = init.minimal.args.iterateAllocator(init.gpa) catch unreachable;
     _ = args.next();
     const input_file_name = args.next() orelse {
         std.debug.print("Please specify a wasm module\n", .{});
         return error.invalidArgs;
     };
 
-    const cwd = std.fs.cwd();
-    const contents = cwd.readFileAlloc(gpa, input_file_name, 2 * 1024 * 1024)
+    const cwd = std.Io.Dir.cwd();
+    const contents = cwd.readFileAlloc(init.io, input_file_name, init.arena.allocator(), .unlimited)
         catch std.debug.panic("reading input wasm file {s}", .{input_file_name});
 
     const sparse_module = wasm.SparseModule.decode(gpa, contents) catch |err| {

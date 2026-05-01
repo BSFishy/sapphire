@@ -2,7 +2,7 @@ const std = @import("std");
 const limine = @import("limine.zig");
 
 pub const HeapAllocator = struct {
-    const Header = packed struct {
+    const Header = struct {
         size: usize,
         is_free: bool,
         next: ?*Header,

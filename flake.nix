@@ -2,11 +2,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-
-    bsfishy = {
-      url = "github:BSFishy/nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    bsfishy.url = "github:BSFishy/nix";
   };
 
   outputs =

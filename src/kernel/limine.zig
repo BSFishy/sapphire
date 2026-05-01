@@ -76,3 +76,56 @@ pub const MemoryMapFeature = extern struct {
     revision: u64,
     response: ?*Response = null,
 };
+
+pub const Uuid = extern struct {
+    a: u32,
+    b: u16,
+    c: u16,
+    d: [8]u8,
+};
+
+pub const File = extern struct {
+    pub const MediaType = enum(u32) {
+        generic = 0,
+        optical = 1,
+        tftp = 2,
+    };
+
+    revision: u64,
+    address: ?*anyopaque,
+    size: u64,
+    path: [*:0]u8,
+    string: [*:0]u8,
+    media_type: MediaType,
+    unused: u32,
+    tftp_ip: u32,
+    tftp_port: u32,
+    partition_index: u32,
+    mbr_disk_id: u32,
+    gpt_disk_uuid: Uuid,
+    gpt_part_uuid: Uuid,
+    part_uuid: Uuid,
+};
+
+pub const ExecutableFileFeature = extern struct {
+    pub const Response = extern struct {
+        revision: u64,
+        executable_file: *File,
+    };
+
+    id: [4]u64 = .{ 0xc7b1dd30df4c8b88, 0x0a82e883a194f07b, 0xad97e90e83f1ed67, 0x31eb5d1c5ff23b69 },
+    revision: u64,
+    response: ?*Response = null,
+};
+
+pub const ExecutableAddressFeature = extern struct {
+    pub const Response = extern struct {
+        revision: u64,
+        physical_base: u64,
+        virtual_base: u64,
+    };
+
+    id: [4]u64 = .{ 0xc7b1dd30df4c8b88, 0x0a82e883a194f07b, 0x71ba76863cc55f63, 0xb2644a48c516a487 },
+    revision: u64,
+    response: ?*Response = null,
+};

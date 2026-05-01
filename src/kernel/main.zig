@@ -1,17 +1,48 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const wasm = @import("wasm");
-const debug = @import("debug.zig");
 const serial = @import("serial.zig");
 const limine = @import("limine.zig");
 const memory = @import("memory.zig");
 const Frame = memory.Frame;
+
+pub const debug = struct {
+    pub const SelfInfo = @import("self_info.zig");
+
+    const debug_info_buffer_size = 8 * 1024 * 1024;
+
+    const S = struct {
+        var debug_info_buffer: [debug_info_buffer_size]u8 align(@alignOf(usize)) = undefined;
+        var debug_info_fba: std.heap.FixedBufferAllocator = .init(&debug_info_buffer);
+    };
+
+    pub fn getDebugInfoAllocator() std.mem.Allocator {
+        return S.debug_info_fba.allocator();
+    }
+
+    pub fn printLineFromFile(io: std.Io, writer: *std.Io.Writer, source_location: std.debug.SourceLocation) !void {
+        _ = io;
+        _ = writer;
+        _ = source_location;
+        return error.FileNotFound;
+    }
+};
+
+pub const std_options_debug_io: std.Io = .failing;
 
 export var start_marker: limine.RequestsStartMarker linksection(".limine_requests_start") = .{};
 export var end_marker: limine.RequestsEndMarker linksection(".limine_requests_end") = .{};
 
 export var base_revision: limine.BaseRevision linksection(".limine_requests") = .init(5);
 export var memory_map: limine.MemoryMapFeature linksection(".limine_requests") = .{
+    .revision = 0,
+};
+
+pub export var executable_file: limine.ExecutableFileFeature linksection(".limine_requests") = .{
+    .revision = 0,
+};
+
+pub export var executable_address: limine.ExecutableAddressFeature linksection(".limine_requests") = .{
     .revision = 0,
 };
 
@@ -54,12 +85,21 @@ fn qemuExit(code: u32) noreturn {
     hcf();
 }
 
-pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ra: ?usize) noreturn {
-    _ = error_return_trace;
-    serial.log("!KERNEL PANIC!\n", .{});
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, first_trace_addr: ?usize) noreturn {
+    serial.log("\n!KERNEL PANIC!\n", .{});
     serial.log("{s}\n", .{msg});
 
-    debug.printStackTrace(ra);
+    if (error_return_trace) |t| if (t.index > 0) {
+        serial.log("error return context:\n", .{});
+        std.debug.writeErrorReturnTrace(t, serial.TERMINAL)
+            catch serial.log("failed to write error return trace\n", .{});
+        serial.log("\nstack trace:\n", .{});
+    };
+
+    std.debug.writeCurrentStackTrace(.{
+        .first_address = first_trace_addr orelse @returnAddress(),
+        .allow_unsafe_unwind = true,
+    }, serial.TERMINAL) catch serial.log("failed to write current stack trace\n", .{});
 
     qemuExit(0x10);
 }
@@ -76,7 +116,7 @@ fn verifyEnvironment() !void {
         @panic("invalid limine boot");
     }
 
-    if (!base_revision.isSupported()) {
+    if (base_revision.isSupported()) {
         serial.log("Invalid Limine revision. Please use Limine revision 5 or newer.\n", .{});
         return error.errors;
     }
@@ -121,4 +161,5 @@ fn main() !void {
 
     serial.log("Result is {}\n", .{wasm.add(1, 2)});
     serial.log("Finished boot sequence. Ready to run some code!\n", .{});
+    return error.invalid;
 }

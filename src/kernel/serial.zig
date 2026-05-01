@@ -3,6 +3,10 @@ const std = @import("std");
 const COM1 = 0x3F8;
 
 pub var WRITER = writer(&.{});
+pub const TERMINAL: std.Io.Terminal = .{
+    .writer = &WRITER,
+    .mode = .no_color,
+};
 
 pub fn log(comptime fmt: []const u8, args: anytype) void {
     WRITER.print(fmt, args) catch unreachable;
