@@ -116,7 +116,7 @@ fn verifyEnvironment() !void {
         @panic("invalid limine boot");
     }
 
-    if (base_revision.isSupported()) {
+    if (!base_revision.isSupported()) {
         serial.log("Invalid Limine revision. Please use Limine revision 5 or newer.\n", .{});
         return error.errors;
     }
@@ -161,5 +161,4 @@ fn main() !void {
 
     serial.log("Result is {}\n", .{wasm.add(1, 2)});
     serial.log("Finished boot sequence. Ready to run some code!\n", .{});
-    return error.invalid;
 }
