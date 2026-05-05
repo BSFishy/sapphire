@@ -409,3 +409,138 @@ pub const RecursiveType = struct {
         };
     }
 };
+
+const Limits = struct {
+    flag: enum {
+        i32,
+        i32_with_maximum,
+        i64,
+        i64_with_maximum,
+    },
+    minimum: u64,
+    maximum: u64,
+
+    pub fn decode(reader: *std.Io.Reader) !Limits {
+        const flag = reader.takeByte()
+            catch |err| switch (err) {
+                error.EndOfStream => return error.invalidLimit,
+                else => unreachable,
+            };
+
+        const minimum = reader.takeLeb128(u64)
+            catch |err| switch (err) {
+                error.EndOfStream, error.Overflow => return error.invalidLimit,
+                else => unreachable,
+            };
+
+        const has_maximum = switch (flag) {
+            0x00, 0x01 => true,
+            0x04, 0x05 => false,
+            else => return error.invalidLimit,
+        };
+        const maximum =
+            if (has_maximum)
+                reader.takeLeb128(u64)
+                    catch |err| switch (err) {
+                        error.EndOfStream, error.Overflow => return error.invalidLimit,
+                        else => unreachable,
+                    }
+            else
+                std.math.maxInt(u64);
+
+        return .{
+            .flag = switch (flag) {
+                0x00 => .i32,
+                0x01 => .i32_with_maximum,
+                0x04 => .i64,
+                0x05 => .i64_with_maximum,
+                else => unreachable,
+            },
+            .minimum = minimum,
+            .maximum = maximum,
+        };
+    }
+};
+
+pub const ExternType = union(enum) {
+    func: u32,
+    table: struct {
+        ref_type: RefType,
+        limits: Limits,
+    },
+    memory: Limits,
+    global: struct {
+        val_type: ValType,
+        mutable: bool,
+    },
+    tag: u32,
+
+    pub fn decode(gpa: std.mem.Allocator, reader: *std.Io.Reader) !ExternType {
+        _ = gpa;
+
+        const discriminator = reader.takeLeb128(u32)
+            catch |err| switch (err) {
+                error.EndOfStream, error.Overflow => return error.invalidExternType,
+                else => unreachable
+            };
+
+        switch (discriminator) {
+            0x00 => {
+                const type_idx = reader.takeLeb128(u32)
+                    catch |err| switch (err) {
+                        error.EndOfStream, error.Overflow => return error.invalidExternType,
+                        else => unreachable,
+                    };
+
+                return .{ .func = type_idx };
+            },
+            0x01 => {
+                const ref_type = try RefType.decode(reader);
+                const limits = try Limits.decode(reader);
+
+                return .{ .table = .{ .ref_type = ref_type, .limits = limits } };
+            },
+            0x02 => {
+                const limits = try Limits.decode(reader);
+                return .{ .memory = limits };
+            },
+            0x03 => {
+                const val_type = try ValType.decode(reader);
+                const mutable_byte = reader.takeByte()
+                    catch |err| switch (err) {
+                        error.EndOfStream => return error.invalidExternType,
+                        else => unreachable,
+                    };
+
+                return .{
+                    .global = .{
+                        .val_type = val_type,
+                        .mutable = switch (mutable_byte) {
+                            0x00 => false,
+                            0x01 => true,
+                            else => return error.invalidExternType,
+                        },
+                    }
+                };
+            },
+            0x04 => {
+                const flag = reader.takeByte()
+                    catch |err| switch (err) {
+                        error.EndOfStream => return error.invalidExternType,
+                        else => unreachable,
+                    };
+
+                if (flag != 0x00) return error.invalidExternType;
+
+                const tag_idx = reader.takeLeb128(u32)
+                    catch |err| switch (err) {
+                        error.EndOfStream, error.Overflow => return error.invalidExternType,
+                        else => unreachable,
+                    };
+
+                return .{ .tag = tag_idx };
+            },
+            else => return error.invalidExternType,
+        }
+    }
+};

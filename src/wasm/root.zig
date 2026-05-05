@@ -1,15 +1,41 @@
 const std = @import("std");
 const RecursiveType = @import("types.zig").RecursiveType;
+const ExternType = @import("types.zig").ExternType;
 
 pub fn add(a: u32, b: u32) u32 {
     return a + b;
 }
 
+pub const ImportIdentifier = struct {
+    namespace: []const u8,
+    identifier: []const u8,
+};
+
 pub const SparseModule = struct {
+    const ImportMap = std.HashMapUnmanaged(
+        ImportIdentifier,
+        ExternType,
+        struct {
+            const Context = @This();
+            pub const hash = struct {
+                fn hash(ctx: Context, key: ImportIdentifier) u64 {
+                    _ = ctx;
+                    var hasher = std.hash.Wyhash.init(0);
+                    hasher.update(key.namespace);
+                    hasher.update(key.identifier);
+                    return hasher.final();
+                }
+            }.hash;
+            pub const eql = std.hash_map.getAutoEqlFn(ImportIdentifier, Context);
+        },
+        std.hash_map.default_max_load_percentage
+    );
+
     allocator: std.heap.ArenaAllocator,
 
-    custom_sections: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    custom_sections: std.StringHashMapUnmanaged([]const u8) = .empty,
     types: std.ArrayListUnmanaged(RecursiveType) = .empty,
+    imports: ImportMap = .empty,
 
     pub fn deinit(self: *const SparseModule) void {
         self.allocator.deinit();
@@ -36,6 +62,11 @@ pub const SparseModule = struct {
 
         try module.decodeCustomSec(&reader);
         try module.decodeTypeSec(&reader);
+        // TODO: yield here
+
+        try module.decodeCustomSec(&reader);
+        try module.decodeImportSec(&reader);
+        // TODO: yield here
 
         try module.decodeCustomSec(&reader);
 
@@ -118,6 +149,38 @@ pub const SparseModule = struct {
             const gpa = self.allocator.allocator();
             const types = try RecursiveType.decode(gpa, data);
             self.types.appendSlice(gpa, types) catch unreachable;
+        }
+    }
+
+    fn decodeImportSec(self: *SparseModule, reader: *std.Io.Reader) !void {
+        while (true) {
+            const section_length = try readSectionHeader(reader, 0x02) orelse return;
+            const data = reader.take(section_length)
+                catch |err| switch (err) {
+                    error.EndOfStream => return error.invalidSection,
+                    else => unreachable,
+                };
+
+            const gpa = self.allocator.allocator();
+            var data_reader = std.Io.Reader.fixed(data);
+            const namespace = readName(&data_reader)
+                catch |err| switch (err) {
+                    error.EndOfStream => return error.invalidImportSection,
+                    else => return err,
+                };
+
+            const identifier = readName(&data_reader)
+                catch |err| switch (err) {
+                    error.EndOfStream => return error.invalidImportSection,
+                    else => return err,
+                };
+
+            const extern_type = try ExternType.decode(gpa, &data_reader);
+
+            const remainingBytes = data_reader.discardRemaining() catch unreachable;
+            if (remainingBytes != 0) return error.invalidImportSection;
+
+            self.imports.put(gpa, .{ .namespace = namespace, .identifier = identifier }, extern_type) catch unreachable;
         }
     }
 };
