@@ -36,6 +36,7 @@ pub const SparseModule = struct {
     custom_sections: std.StringHashMapUnmanaged([]const u8) = .empty,
     types: std.ArrayListUnmanaged(RecursiveType) = .empty,
     imports: ImportMap = .empty,
+    functions: std.ArrayListUnmanaged(u32) = .empty,
 
     pub fn deinit(self: *const SparseModule) void {
         self.allocator.deinit();
@@ -66,6 +67,10 @@ pub const SparseModule = struct {
 
         try module.decodeCustomSec(&reader);
         try module.decodeImportSec(&reader);
+        // TODO: yield here
+
+        try module.decodeCustomSec(&reader);
+        try module.decodeFuncSec(&reader);
         // TODO: yield here
 
         try module.decodeCustomSec(&reader);
@@ -181,6 +186,39 @@ pub const SparseModule = struct {
             if (remainingBytes != 0) return error.invalidImportSection;
 
             self.imports.put(gpa, .{ .namespace = namespace, .identifier = identifier }, extern_type) catch unreachable;
+        }
+    }
+
+    fn decodeFuncSec(self: *SparseModule, reader: *std.Io.Reader) !void {
+        while (true) {
+            const section_length = try readSectionHeader(reader, 0x03) orelse return;
+            const data = reader.take(section_length)
+                catch |err| switch (err) {
+                    error.EndOfStream => return error.invalidFuncSection,
+                    else => unreachable,
+                };
+
+            const gpa = self.allocator.allocator();
+            var data_reader = std.Io.Reader.fixed(data);
+
+            const func_count = data_reader.takeLeb128(u32)
+                catch |err| switch (err) {
+                    error.EndOfStream, error.Overflow => return error.invalidFuncSection,
+                    else => unreachable,
+                };
+
+            for (0..func_count) |_| {
+                const type_idx = data_reader.takeLeb128(u32)
+                    catch |err| switch (err) {
+                        error.EndOfStream, error.Overflow => return error.invalidFuncSection,
+                        else => unreachable,
+                    };
+
+                self.functions.append(gpa, type_idx) catch unreachable;
+            }
+
+            const remainingBytes = data_reader.discardRemaining() catch unreachable;
+            if (remainingBytes != 0) return error.invalidFuncSection;
         }
     }
 };
