@@ -6,11 +6,6 @@ pub fn add(a: u32, b: u32) u32 {
     return a + b;
 }
 
-pub const ImportIdentifier = struct {
-    namespace: []const u8,
-    identifier: []const u8,
-};
-
 // TODO: This is a pretty dumb implementation. The proper std.Io.Reader
 // interface should be preferred, allowing error.ReadFailed instead of expecting
 // the reader to be a std.Io.Reader.fixed.
@@ -22,6 +17,11 @@ pub const ImportIdentifier = struct {
 // Otherwise a malicious actor may upload a massive module that starves the CPU
 // of a server.
 pub const SparseModule = struct {
+    pub const ImportIdentifier = struct {
+        namespace: []const u8,
+        identifier: []const u8,
+    };
+
     const ImportMap = std.HashMapUnmanaged(
         ImportIdentifier,
         ExternType,
