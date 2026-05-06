@@ -11,6 +11,16 @@ pub const ImportIdentifier = struct {
     identifier: []const u8,
 };
 
+// TODO: This is a pretty dumb implementation. The proper std.Io.Reader
+// interface should be preferred, allowing error.ReadFailed instead of expecting
+// the reader to be a std.Io.Reader.fixed.
+// TODO: The decoder should also operate in a single pass, decoding, validating,
+// then instantiating in one operation. The operation should be to take a reader
+// and produce an instantiated module, ready to be executed.
+// TODO: List lengths should be used as a rough gauge for module size. More
+// trusted modules should be allowed more elements so as to not starve CPU.
+// Otherwise a malicious actor may upload a massive module that starves the CPU
+// of a server.
 pub const SparseModule = struct {
     const ImportMap = std.HashMapUnmanaged(
         ImportIdentifier,
