@@ -40,7 +40,7 @@ const VecType = enum {
     }
 };
 
-const HeapType = union(enum) {
+pub const HeapType = union(enum) {
     type_idx: u32,
     noexn,
     nofunc,
@@ -55,7 +55,7 @@ const HeapType = union(enum) {
     array,
     exn,
 
-    fn decode(reader: *std.Io.Reader) !HeapType {
+    pub fn decode(reader: *std.Io.Reader) !HeapType {
         const discriminator = reader.peekByte()
             catch |err| switch (err) {
                 error.EndOfStream => return error.invalidType,
@@ -122,7 +122,7 @@ const HeapType = union(enum) {
     }
 };
 
-const RefType = struct {
+pub const RefType = struct {
     heap_type: HeapType,
     nullable: bool,
 
@@ -159,12 +159,12 @@ const RefType = struct {
     }
 };
 
-const ValType = union(enum) {
+pub const ValType = union(enum) {
     num: NumType,
     vec: VecType,
     ref: RefType,
 
-    fn decode(reader: *std.Io.Reader) !ValType {
+    pub fn decode(reader: *std.Io.Reader) !ValType {
         const discriminator = reader.peekByte()
             catch |err| switch (err) {
                 error.EndOfStream => return error.invalidType,
@@ -462,12 +462,21 @@ const Limits = struct {
     }
 };
 
+pub const TableType = struct {
+    ref_type: RefType,
+    limits: Limits,
+
+    pub fn decode(reader: *std.Io.Reader) !TableType {
+        const ref_type = try RefType.decode(reader);
+        const limits = try Limits.decode(reader);
+
+        return .{ .ref_type = ref_type, .limits = limits };
+    }
+};
+
 pub const ExternType = union(enum) {
     func: u32,
-    table: struct {
-        ref_type: RefType,
-        limits: Limits,
-    },
+    table: TableType,
     memory: Limits,
     global: struct {
         val_type: ValType,
@@ -475,9 +484,7 @@ pub const ExternType = union(enum) {
     },
     tag: u32,
 
-    pub fn decode(gpa: std.mem.Allocator, reader: *std.Io.Reader) !ExternType {
-        _ = gpa;
-
+    pub fn decode(reader: *std.Io.Reader) !ExternType {
         const discriminator = reader.takeLeb128(u32)
             catch |err| switch (err) {
                 error.EndOfStream, error.Overflow => return error.invalidExternType,
@@ -494,16 +501,8 @@ pub const ExternType = union(enum) {
 
                 return .{ .func = type_idx };
             },
-            0x01 => {
-                const ref_type = try RefType.decode(reader);
-                const limits = try Limits.decode(reader);
-
-                return .{ .table = .{ .ref_type = ref_type, .limits = limits } };
-            },
-            0x02 => {
-                const limits = try Limits.decode(reader);
-                return .{ .memory = limits };
-            },
+            0x01 => return .{ .table = try TableType.decode(reader) },
+            0x02 => return .{ .memory = try Limits.decode(reader) },
             0x03 => {
                 const val_type = try ValType.decode(reader);
                 const mutable_byte = reader.takeByte()

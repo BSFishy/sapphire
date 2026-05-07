@@ -1,6 +1,8 @@
 const std = @import("std");
-const RecursiveType = @import("types.zig").RecursiveType;
-const ExternType = @import("types.zig").ExternType;
+const types = @import("types.zig");
+const RecursiveType = types.RecursiveType;
+const ExternType = types.ExternType;
+const Expr = @import("instructions.zig").Expr;
 
 pub fn add(a: u32, b: u32) u32 {
     return a + b;
@@ -41,12 +43,18 @@ pub const SparseModule = struct {
         std.hash_map.default_max_load_percentage
     );
 
+    const Table = struct {
+        table_type: types.TableType,
+        expr: Expr,
+    };
+
     allocator: std.heap.ArenaAllocator,
 
     custom_sections: std.StringHashMapUnmanaged([]const u8) = .empty,
     types: std.ArrayListUnmanaged(RecursiveType) = .empty,
     imports: ImportMap = .empty,
     functions: std.ArrayListUnmanaged(u32) = .empty,
+    tables: std.ArrayListUnmanaged(Table) = .empty,
 
     pub fn deinit(self: *const SparseModule) void {
         self.allocator.deinit();
@@ -81,6 +89,10 @@ pub const SparseModule = struct {
 
         try module.decodeCustomSec(&reader);
         try module.decodeFuncSec(&reader);
+        // TODO: yield here
+
+        try module.decodeCustomSec(&reader);
+        try module.decodeTableSec(&reader);
         // TODO: yield here
 
         try module.decodeCustomSec(&reader);
@@ -162,8 +174,7 @@ pub const SparseModule = struct {
                 };
 
             const gpa = self.allocator.allocator();
-            const types = try RecursiveType.decode(gpa, data);
-            self.types.appendSlice(gpa, types) catch unreachable;
+            self.types.appendSlice(gpa, try RecursiveType.decode(gpa, data)) catch unreachable;
         }
     }
 
@@ -190,7 +201,7 @@ pub const SparseModule = struct {
                     else => return err,
                 };
 
-            const extern_type = try ExternType.decode(gpa, &data_reader);
+            const extern_type = try ExternType.decode(&data_reader);
 
             const remainingBytes = data_reader.discardRemaining() catch unreachable;
             if (remainingBytes != 0) return error.invalidImportSection;
@@ -225,6 +236,61 @@ pub const SparseModule = struct {
                     };
 
                 self.functions.append(gpa, type_idx) catch unreachable;
+            }
+
+            const remainingBytes = data_reader.discardRemaining() catch unreachable;
+            if (remainingBytes != 0) return error.invalidFuncSection;
+        }
+    }
+
+    fn decodeTableSec(self: *SparseModule, reader: *std.Io.Reader) !void {
+        while (true) {
+            const section_length = try readSectionHeader(reader, 0x03) orelse return;
+            const data = reader.take(section_length)
+                catch |err| switch (err) {
+                    error.EndOfStream => return error.invalidFuncSection,
+                    else => unreachable,
+                };
+
+            const gpa = self.allocator.allocator();
+            var data_reader = std.Io.Reader.fixed(data);
+
+            const table_count = data_reader.takeLeb128(u32)
+                catch |err| switch (err) {
+                    error.EndOfStream, error.Overflow => return error.invalidTableSection,
+                    else => unreachable,
+                };
+
+            for (0..table_count) |_| {
+                const discriminator = data_reader.takeByte()
+                    catch |err| switch (err) {
+                        error.EndOfStream => return error.invalidTableSection,
+                        else => unreachable,
+                    };
+
+                if (discriminator == 0x40) {
+                    const check = data_reader.takeByte()
+                        catch |err| switch (err) {
+                            error.EndOfStream => return error.invalidTableSection,
+                            else => unreachable,
+                        };
+
+                    if (check != 0x00) return error.invalidTableSection;
+
+                    const table_type = try types.TableType.decode(&data_reader);
+                    const expr = try Expr.decode(gpa, &data_reader);
+
+                    self.tables.append(gpa, .{ .table_type = table_type, .expr = expr }) catch unreachable;
+                    continue;
+                }
+
+                const table_type = try types.TableType.decode(&data_reader);
+                const ref_type = table_type.ref_type;
+                const heap_type = ref_type.heap_type;
+                self.tables.append(gpa, .{
+                    .table_type = table_type,
+                    .expr = .single(gpa, .{ .ref_null = heap_type }),
+                }) catch unreachable;
             }
 
             const remainingBytes = data_reader.discardRemaining() catch unreachable;
