@@ -64,7 +64,7 @@ pub const Instr = struct {
                 else => unreachable,
             };
 
-        const op: Opcode = @enumFromInt(subopcode);
+        const op = std.enums.fromInt(Opcode, subopcode) orelse return error.invalidInstruction;
 
         return .{
             .op = op,

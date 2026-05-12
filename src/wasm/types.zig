@@ -126,7 +126,7 @@ pub const RefType = struct {
     heap_type: HeapType,
     nullable: bool,
 
-    fn decode(reader: *std.Io.Reader) !RefType {
+    pub fn decode(reader: *std.Io.Reader) !RefType {
         const discriminator = reader.peekByte()
             catch |err| switch (err) {
                 error.EndOfStream => return error.invalidType,
@@ -134,18 +134,54 @@ pub const RefType = struct {
             };
 
         return switch (discriminator) {
-            0x74 => .{ .heap_type = .noexn, .nullable = true },
-            0x73 => .{ .heap_type = .nofunc, .nullable = true },
-            0x72 => .{ .heap_type = .noextern, .nullable = true },
-            0x71 => .{ .heap_type = .none, .nullable = true },
-            0x70 => .{ .heap_type = .func, .nullable = true },
-            0x6F => .{ .heap_type = .@"extern", .nullable = true },
-            0x6E => .{ .heap_type = .any, .nullable = true },
-            0x6D => .{ .heap_type = .eq, .nullable = true },
-            0x6C => .{ .heap_type = .i31, .nullable = true },
-            0x6B => .{ .heap_type = .@"struct", .nullable = true },
-            0x6A => .{ .heap_type = .array, .nullable = true },
-            0x69 => .{ .heap_type = .exn, .nullable = true },
+            0x74 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .noexn, .nullable = true };
+            },
+            0x73 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .nofunc, .nullable = true };
+            },
+            0x72 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .noextern, .nullable = true };
+            },
+            0x71 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .none, .nullable = true };
+            },
+            0x70 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .func, .nullable = true };
+            },
+            0x6F => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .@"extern", .nullable = true };
+            },
+            0x6E => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .any, .nullable = true };
+            },
+            0x6D => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .eq, .nullable = true };
+            },
+            0x6C => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .i31, .nullable = true };
+            },
+            0x6B => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .@"struct", .nullable = true };
+            },
+            0x6A => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .array, .nullable = true };
+            },
+            0x69 => blk: {
+                _ = reader.takeByte() catch unreachable;
+                break :blk .{ .heap_type = .exn, .nullable = true };
+            },
             0x64 => blk: {
                 _ = reader.takeByte() catch unreachable;
                 break :blk .{ .heap_type = try HeapType.decode(reader), .nullable = false };
@@ -410,7 +446,7 @@ pub const RecursiveType = struct {
     }
 };
 
-const Limits = struct {
+pub const Limits = struct {
     flag: enum {
         i32,
         i32_with_maximum,
@@ -434,8 +470,8 @@ const Limits = struct {
             };
 
         const has_maximum = switch (flag) {
-            0x00, 0x01 => true,
-            0x04, 0x05 => false,
+            0x00, 0x04 => false,
+            0x01, 0x05 => true,
             else => return error.invalidLimit,
         };
         const maximum =
@@ -474,15 +510,57 @@ pub const TableType = struct {
     }
 };
 
+pub const TagType = struct {
+    type_idx: u32,
+
+    pub fn decode(reader: *std.Io.Reader) !TagType {
+        const flag = reader.takeByte()
+            catch |err| switch (err) {
+                error.EndOfStream => return error.invalidExternType,
+                else => unreachable,
+            };
+
+        if (flag != 0x00) return error.invalidExternType;
+
+        const type_idx = reader.takeLeb128(u32)
+            catch |err| switch (err) {
+                error.EndOfStream, error.Overflow => return error.invalidExternType,
+                else => unreachable,
+            };
+
+        return .{ .type_idx = type_idx };
+    }
+};
+
+pub const GlobalType = struct {
+    val_type: ValType,
+    mutable: bool,
+
+    pub fn decode(reader: *std.Io.Reader) !GlobalType {
+        const val_type = try ValType.decode(reader);
+        const mutable_byte = reader.takeByte()
+            catch |err| switch (err) {
+                error.EndOfStream => return error.invalidExternType,
+                else => unreachable,
+            };
+
+        return .{
+            .val_type = val_type,
+            .mutable = switch (mutable_byte) {
+                0x00 => false,
+                0x01 => true,
+                else => return error.invalidExternType,
+            },
+        };
+    }
+};
+
 pub const ExternType = union(enum) {
     func: u32,
     table: TableType,
     memory: Limits,
-    global: struct {
-        val_type: ValType,
-        mutable: bool,
-    },
-    tag: u32,
+    global: GlobalType,
+    tag: TagType,
 
     pub fn decode(reader: *std.Io.Reader) !ExternType {
         const discriminator = reader.takeLeb128(u32)
@@ -503,42 +581,8 @@ pub const ExternType = union(enum) {
             },
             0x01 => return .{ .table = try TableType.decode(reader) },
             0x02 => return .{ .memory = try Limits.decode(reader) },
-            0x03 => {
-                const val_type = try ValType.decode(reader);
-                const mutable_byte = reader.takeByte()
-                    catch |err| switch (err) {
-                        error.EndOfStream => return error.invalidExternType,
-                        else => unreachable,
-                    };
-
-                return .{
-                    .global = .{
-                        .val_type = val_type,
-                        .mutable = switch (mutable_byte) {
-                            0x00 => false,
-                            0x01 => true,
-                            else => return error.invalidExternType,
-                        },
-                    }
-                };
-            },
-            0x04 => {
-                const flag = reader.takeByte()
-                    catch |err| switch (err) {
-                        error.EndOfStream => return error.invalidExternType,
-                        else => unreachable,
-                    };
-
-                if (flag != 0x00) return error.invalidExternType;
-
-                const tag_idx = reader.takeLeb128(u32)
-                    catch |err| switch (err) {
-                        error.EndOfStream, error.Overflow => return error.invalidExternType,
-                        else => unreachable,
-                    };
-
-                return .{ .tag = tag_idx };
-            },
+            0x03 => return .{ .global = try GlobalType.decode(reader) },
+            0x04 => return .{ .tag = try TagType.decode(reader) },
             else => return error.invalidExternType,
         }
     }
