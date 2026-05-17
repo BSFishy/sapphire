@@ -38,17 +38,17 @@ const ImportMap = std.HashMapUnmanaged(
     std.hash_map.default_max_load_percentage
 );
 
-const Table = struct {
+pub const Table = struct {
     table_type: wasm_types.TableType,
     expr: Expr,
 };
 
-const Global = struct {
+pub const Global = struct {
     global_type: wasm_types.GlobalType,
     expr: Expr,
 };
 
-const Export = struct {
+pub const Export = struct {
     name: []const u8,
     desc: union(enum) {
         func: u32,
@@ -59,7 +59,7 @@ const Export = struct {
     },
 };
 
-const Elem = struct {
+pub const Elem = struct {
     type_info: union(enum) {
         elemkind_funcref,
         ref_type: wasm_types.RefType,
@@ -78,12 +78,12 @@ const Elem = struct {
     },
 };
 
-const Code = struct {
+pub const Code = struct {
     locals: std.ArrayListUnmanaged(wasm_types.ValType),
     expr: Expr,
 };
 
-const Data = struct {
+pub const Data = struct {
     bytes: []const u8,
     mode: union(enum) {
         passive,
@@ -94,7 +94,7 @@ const Data = struct {
     },
 };
 
-allocator: std.heap.ArenaAllocator,
+arena: std.heap.ArenaAllocator,
 
 custom_sections: std.StringHashMapUnmanaged([]const u8) = .empty,
 types: std.ArrayListUnmanaged(wasm_types.RecursiveType) = .empty,
@@ -112,7 +112,7 @@ codes: std.ArrayListUnmanaged(Code) = .empty,
 data_segments: std.ArrayListUnmanaged(Data) = .empty,
 
 pub fn deinit(self: *const Module) void {
-    self.allocator.deinit();
+    self.arena.deinit();
 }
 
 pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Module {
@@ -132,7 +132,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Module {
     if (data[7] != 0x00) return error.invalidVersion;
 
     var reader = std.Io.Reader.fixed(data[8..]);
-    var module: Module = .{ .allocator = arena_allocator };
+    var module: Module = .{ .arena = arena_allocator };
 
     try module.decodeCustomSec(&reader);
     try module.decodeTypeSec(&reader);
@@ -248,7 +248,7 @@ fn decodeCustomSec(self: *Module, reader: *std.Io.Reader) !void {
         const remaining = data_reader.discardRemaining() catch unreachable;
         const content = data[data.len - remaining ..];
 
-        self.custom_sections.put(self.allocator.allocator(), name, content) catch unreachable;
+        self.custom_sections.put(self.arena.allocator(), name, content) catch unreachable;
     }
 }
 
@@ -260,7 +260,7 @@ fn decodeTypeSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     self.types.appendSlice(gpa, try wasm_types.RecursiveType.decode(gpa, data)) catch unreachable;
 }
 
@@ -272,7 +272,7 @@ fn decodeImportSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const import_count = data_reader.takeLeb128(u32)
@@ -311,7 +311,7 @@ fn decodeFuncSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const func_count = data_reader.takeLeb128(u32)
@@ -342,7 +342,7 @@ fn decodeTableSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const table_count = data_reader.takeLeb128(u32)
@@ -396,7 +396,7 @@ fn decodeMemorySec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const memory_count = data_reader.takeLeb128(u32)
@@ -421,7 +421,7 @@ fn decodeTagSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const tag_count = data_reader.takeLeb128(u32)
@@ -446,7 +446,7 @@ fn decodeGlobalSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const global_count = data_reader.takeLeb128(u32)
@@ -473,7 +473,7 @@ fn decodeExportSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const export_count = data_reader.takeLeb128(u32)
@@ -545,7 +545,7 @@ fn decodeElemSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const elem_count = data_reader.takeLeb128(u32)
@@ -709,7 +709,7 @@ fn decodeCodeSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const code_count = data_reader.takeLeb128(u32)
@@ -771,7 +771,7 @@ fn decodeDataSec(self: *Module, reader: *std.Io.Reader) !void {
             else => unreachable,
         };
 
-    const gpa = self.allocator.allocator();
+    const gpa = self.arena.allocator();
     var data_reader = std.Io.Reader.fixed(data);
 
     const data_count = data_reader.takeLeb128(u32)

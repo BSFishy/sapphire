@@ -20,12 +20,15 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
 
-    var iterator = sparse_module.custom_sections.iterator();
-    while (iterator.next()) |section| {
-        const key = section.key_ptr.*;
-        const value = section.value_ptr.*;
+    var store: wasm.Store = .init(gpa);
+    const module_inst = try store.instantiate(&sparse_module);
+    const results = try module_inst.invoke(&store, "add", &.{
+        .{ .i32 = 2 },
+        .{ .i32 = 3 },
+    });
 
-        std.debug.print("custom section {s}: {}\n", .{key, value.len});
+    for (results, 0..) |value, i| {
+        std.debug.print("add result {}: {any}\n", .{i, value});
     }
 
     std.debug.print("Hello world! {}\n", .{wasm.add(1, 2)});

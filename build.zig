@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     const iso_path = iso(b, .{ .kernel_path = kernel_path, .arch = arch });
     qemu(b, .{ .arch = arch, .iso_path = iso_path, .kernel_path = kernel_path });
 
-    const my_wasm_module = myModuleWasm(b, .{ .optimize = optimize });
+    const my_wasm_module = myModuleWasm(b);
     exeModule(b, .{ .target = target, .optimize = optimize, .wasm_module = wasm_module, .my_wasm_module = my_wasm_module });
 }
 
@@ -168,9 +168,7 @@ fn kernelModule(b: *std.Build, opts: KernelBuildOptions) std.Build.LazyPath {
     return kernel.getEmittedBin();
 }
 
-fn myModuleWasm(b: *std.Build, opts: struct {
-    optimize: std.builtin.OptimizeMode,
-}) std.Build.LazyPath {
+fn myModuleWasm(b: *std.Build) std.Build.LazyPath {
     const wasm_query: std.Target.Query = .{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
@@ -181,7 +179,7 @@ fn myModuleWasm(b: *std.Build, opts: struct {
     const wasm_module = b.createModule(.{
         .root_source_file = b.path("src/my-module/main.zig"),
         .target = wasm_target,
-        .optimize = opts.optimize,
+        .optimize = .ReleaseFast,
     });
 
     const wasm = b.addExecutable(.{

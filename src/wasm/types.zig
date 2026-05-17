@@ -446,6 +446,27 @@ pub const RecursiveType = struct {
     }
 };
 
+pub const FuncType = struct {
+    params: []const ValType,
+    results: []const ValType,
+};
+
+pub fn resolveFuncType(types: []const RecursiveType, idx: u32) !FuncType {
+    if (idx >= types.len) return error.invalidType;
+
+    const recursive_type = types[idx];
+    if (recursive_type.sub_types.len != 1) return error.invalidType;
+
+    const sub_type = recursive_type.sub_types[0];
+    return switch (sub_type.comp_type) {
+        .func => |func| .{
+            .params = func.args.val_types,
+            .results = func.results.val_types,
+        },
+        else => error.invalidType,
+    };
+}
+
 pub const Limits = struct {
     flag: enum {
         i32,
